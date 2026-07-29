@@ -53,6 +53,7 @@
     NSArray* _sortedAppList;
     NSCache* _boxArtCache;
     bool _background;
+    NSString* _deepLinkAppQuery;
 #if TARGET_OS_TV
     UITapGestureRecognizer* _menuRecognizer;
 #endif
@@ -204,6 +205,10 @@ static NSMutableSet* hostList;
                 [self->_appManager stopRetrieving];
                 [self->_appManager retrieveAssetsFromHost:host];
                 [self hideLoadingFrame: nil];
+
+                // The app list is now current, so a pending deep link can be
+                // resolved against it.
+                [self launchPendingDeepLinkApp:host];
             });
         }
     });
@@ -298,6 +303,11 @@ static NSMutableSet* hostList;
     _showHiddenApps = NO;
     _selectedHost = nil;
     _sortedAppList = nil;
+
+    // Abandon any pending deep link. We get here when connecting to the host
+    // failed, or when the user navigated back, so it must not fire later
+    // against a host the user picks by hand.
+    _deepLinkAppQuery = nil;
     
     [self updateTitle];
     [self disableUpButton];
@@ -1073,6 +1083,117 @@ static NSMutableSet* hostList;
             [self hostClicked:matchingHost view:nil];
         }
     }
+
+    // Check if we have a pending deep link
+    if (delegate.deepLinkHostQuery != nil) {
+        TemporaryHost* matchingHost = [self findHostMatching:delegate.deepLinkHostQuery];
+        if (matchingHost == nil) {
+            Log(LOG_W, @"No saved host matches deep link: %@", delegate.deepLinkHostQuery);
+        }
+        else {
+            // Remember the app to launch once the app list has been refreshed
+            _deepLinkAppQuery = delegate.deepLinkAppQuery;
+
+            // Navigate to the host page. We pass a nil view deliberately, which
+            // skips the cached app list fast path and refetches serverinfo, so
+            // the host's running game is accurate by the time we launch.
+            [self hostClicked:matchingHost view:nil];
+        }
+
+        // Clear the pending deep link
+        delegate.deepLinkHostQuery = nil;
+        delegate.deepLinkAppQuery = nil;
+    }
+}
+
+- (TemporaryHost*) findHostMatching:(NSString*)query {
+    @synchronized (hostList) {
+        for (TemporaryHost* host in hostList) {
+            if ([host.uuid isEqualToString:query]) {
+                return host;
+            }
+        }
+        for (TemporaryHost* host in hostList) {
+            if ([host.name caseInsensitiveCompare:query] == NSOrderedSame) {
+                return host;
+            }
+        }
+        for (TemporaryHost* host in hostList) {
+            for (NSString* address in @[host.activeAddress ?: @"", host.address ?: @"",
+                                        host.localAddress ?: @"", host.externalAddress ?: @"",
+                                        host.ipv6Address ?: @""]) {
+                if (address.length > 0 && [address caseInsensitiveCompare:query] == NSOrderedSame) {
+                    return host;
+                }
+            }
+        }
+    }
+    return nil;
+}
+
+- (TemporaryApp*) findAppMatching:(NSString*)query inHost:(TemporaryHost*)host {
+    for (TemporaryApp* app in host.appList) {
+        if ([app.id isEqualToString:query]) {
+            return app;
+        }
+    }
+    for (TemporaryApp* app in host.appList) {
+        if ([app.name caseInsensitiveCompare:query] == NSOrderedSame) {
+            return app;
+        }
+    }
+    return nil;
+}
+
+- (void) displayDeepLinkFailureDialog:(NSString*)message {
+    UIAlertController* alert = [UIAlertController alertControllerWithTitle:@"Deep Link Failed"
+                                                                  message:message
+                                                           preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+    [[self activeViewController] presentViewController:alert animated:YES completion:nil];
+}
+
+// Called once the host's app list has been refreshed, to start the app
+// requested by a pending deep link.
+- (void) launchPendingDeepLinkApp:(TemporaryHost*)host {
+    NSString* appQuery = _deepLinkAppQuery;
+    if (appQuery == nil) {
+        return;
+    }
+
+    // Clear it first so we only ever act on a deep link once
+    _deepLinkAppQuery = nil;
+
+    TemporaryApp* app = [self findAppMatching:appQuery inHost:host];
+    if (app == nil) {
+        Log(LOG_W, @"No app on %@ matches deep link: %@", host.name, appQuery);
+        [self displayDeepLinkFailureDialog:[NSString stringWithFormat:@"'%@' was not found on %@.", appQuery, host.name]];
+        return;
+    }
+
+    TemporaryApp* runningApp = [self findRunningApp:host];
+    if (runningApp != nil && ![runningApp.id isEqualToString:app.id]) {
+        // We can't launch a different app while one is running, and we have no
+        // user present to answer a quit prompt.
+        Log(LOG_W, @"Not launching %@ because %@ is running", app.name, runningApp.name);
+        [self displayDeepLinkFailureDialog:[NSString stringWithFormat:@"%@ is currently running on %@. Quit it before streaming %@.", runningApp.name, host.name, app.name]];
+        return;
+    }
+
+    Log(LOG_I, @"%@ application from deep link: %@", runningApp != nil ? @"Resuming" : @"Launching", app.name);
+    [_appManager stopRetrieving];
+
+#if !TARGET_OS_TV
+    if (currentPosition != FrontViewPositionLeft) {
+        // This must not be animated because we need the position
+        // to change (and notify our callback to save settings data)
+        // before we call prepareToStreamApp.
+        [[self revealViewController] revealToggleAnimated:NO];
+    }
+#endif
+
+    [self prepareToStreamApp:app];
+    [self performSegueWithIdentifier:@"createStreamFrame" sender:nil];
 }
 
 -(void)handleReturnToForeground

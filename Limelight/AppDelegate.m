@@ -39,6 +39,35 @@ static NSString* DB_NAME = @"Limelight_iOS.sqlite";
 }
 #endif
 
+// Returns the value of the first query item matching one of the given names
+static NSString* valueForQueryKeys(NSArray<NSURLQueryItem*>* queryItems, NSArray<NSString*>* keys) {
+    for (NSString* key in keys) {
+        for (NSURLQueryItem* item in queryItems) {
+            if ([item.name caseInsensitiveCompare:key] == NSOrderedSame && item.value.length > 0) {
+                return item.value;
+            }
+        }
+    }
+    return nil;
+}
+
+// Handles moonlight://launch?host=<name|uuid|address>&app=<name|id>
+- (BOOL)application:(UIApplication *)application openURL:(NSURL *)url options:(NSDictionary<UIApplicationOpenURLOptionsKey,id> *)options {
+    NSArray<NSURLQueryItem*>* queryItems = [NSURLComponents componentsWithURL:url resolvingAgainstBaseURL:NO].queryItems;
+
+    NSString* hostQuery = valueForQueryKeys(queryItems, @[@"host", @"ip", @"uuid", @"name"]);
+    if (hostQuery == nil) {
+        Log(LOG_W, @"Ignoring deep link with no host: %@", url);
+        return NO;
+    }
+
+    _deepLinkHostQuery = hostQuery;
+    _deepLinkAppQuery = valueForQueryKeys(queryItems, @[@"app", @"appid", @"appname"]);
+
+    Log(LOG_I, @"Deep link requested host: %@ app: %@", _deepLinkHostQuery, _deepLinkAppQuery);
+    return YES;
+}
+
 - (void)applicationWillResignActive:(UIApplication *)application
 {
     // Sent when the application is about to move from active to inactive state. This can occur for certain types of temporary interruptions (such as an incoming phone call or SMS message) or when the user quits the application and it begins the transition to the background state.

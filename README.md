@@ -10,6 +10,29 @@ Check out [the Moonlight wiki](https://github.com/moonlight-stream/moonlight-doc
 
 [![Moonlight for iOS and tvOS](https://moonlight-stream.org/images/App_Store_Badge_135x40.svg)](https://apps.apple.com/us/app/moonlight-game-streaming/id1000551566)
 
+## Deep links
+
+This fork registers the `moonlight://` URL scheme on iOS/iPadOS, so a Shortcut,
+an automation, or a Home Screen bookmark can launch straight into a stream:
+
+```
+moonlight://launch?host=Gaming-PC&app=Steam
+```
+
+* `host` — the PC, identified by its name, its UUID, or any of its addresses.
+  Aliases: `ip`, `uuid`, `name`.
+* `app` — the game or app, identified by its name or its numeric ID.
+  Aliases: `appid`, `appname`. Optional: leave it out to just open the PC's app
+  list.
+
+Matching is case-insensitive, and values must be URL-encoded (a space becomes
+`%20`). The PC has to have been paired in the app at least once, since the deep
+link resolves against saved hosts.
+
+To use it from the Shortcuts app, add an **Open URLs** action and paste the URL.
+If a different game is already running on the host, the deep link stops at the
+app list and tells you rather than quitting it.
+
 ## Building
 * Install Xcode from the [App Store page](https://apps.apple.com/us/app/xcode/id497799835)
 * Run `git clone --recursive https://github.com/moonlight-stream/moonlight-ios.git`
