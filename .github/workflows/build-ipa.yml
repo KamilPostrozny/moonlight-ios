@@ -15,6 +15,12 @@ jobs:
         with:
           submodules: recursive
 
+      # The runner still defaults to Xcode 16 (iOS 18 SDK). Without the iOS 26 SDK,
+      # iOS runs us in compatibility mode on iPhone Air / 17, reporting the previous
+      # model's screen size (402x874 pt instead of 420x912) and upscaling everything.
+      - name: Use the iOS 26 SDK
+        run: sudo xcode-select -s "$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)"
+
       - name: Show toolchain
         run: xcodebuild -version
 
