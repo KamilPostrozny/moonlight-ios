@@ -6,6 +6,8 @@
 //  Copyright (c) 2014 Moonlight Stream. All rights reserved.
 //
 
+@import AVFoundation;
+
 #import "StreamView.h"
 #include <Limelight.h>
 #import "DataManager.h"
@@ -173,6 +175,40 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
     }
     else {
         return [onScreenControls getLevel];
+    }
+}
+
+- (void)layoutSubviews {
+    [super layoutSubviews];
+
+    // VideoDecoderRenderer sizes its AVSampleBufferDisplayLayer once, at setup,
+    // from our bounds at that moment. CALayer sublayers don't autoresize, so any
+    // later bounds change — rotation, or the forced switch to landscape when a
+    // stream starts in portrait — leaves the video off-centre. The renderer is a
+    // static inside Connection.m and isn't reachable from here, but the layer is
+    // our own sublayer, so re-apply its own sizing rule.
+    //
+    // ponytail: searches sublayers by class because the renderer isn't reachable
+    // from here; the tidier fix is for VideoDecoderRenderer to expose a re-layout
+    // method once something owns a reference to it.
+    if (streamAspectRatio <= 0) {
+        return;
+    }
+
+    for (CALayer* layer in self.layer.sublayers) {
+        if (![layer isKindOfClass:[AVSampleBufferDisplayLayer class]]) {
+            continue;
+        }
+
+        CGSize videoSize = [self getVideoAreaSize];
+
+        // No implicit animation — the layer would visibly slide into place on
+        // every rotation.
+        [CATransaction begin];
+        [CATransaction setDisableActions:YES];
+        layer.position = CGPointMake(CGRectGetMidX(self.bounds), CGRectGetMidY(self.bounds));
+        layer.bounds = CGRectMake(0, 0, videoSize.width, videoSize.height);
+        [CATransaction commit];
     }
 }
 
