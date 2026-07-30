@@ -16,6 +16,7 @@
 #import "RelativeTouchHandler.h"
 #import "AbsoluteTouchHandler.h"
 #import "KeyboardInputField.h"
+#import "Utils.h"
 
 static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
 
@@ -398,21 +399,12 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
                 keyInputField.delegate = self;
                 keyInputField.text = @"0";
 #if !TARGET_OS_TV
-                // Prepare the toolbar above the keyboard for more options
-                UIToolbar *customToolbarView = [[UIToolbar alloc] initWithFrame:CGRectMake(0, 0, self.bounds.size.width, 44)];
-                
-                UIBarButtonItem *doneBarButton = [self createButtonWithImageNamed:@"DoneIcon.png" backgroundColor:[UIColor clearColor] target:self action:@selector(toolbarButtonClicked:) keyCode:0x00 isToggleable:NO];
-                UIBarButtonItem *windowsBarButton = [self createButtonWithImageNamed:@"WindowsIcon.png" backgroundColor:[UIColor blackColor] target:self action:@selector(toolbarButtonClicked:) keyCode:0x5B isToggleable:YES];
-                UIBarButtonItem *tabBarButton = [self createButtonWithImageNamed:@"TabIcon.png" backgroundColor:[UIColor blackColor] target:self action:@selector(toolbarButtonClicked:) keyCode:0x09 isToggleable:NO];
-                UIBarButtonItem *shiftBarButton = [self createButtonWithImageNamed:@"ShiftIcon.png" backgroundColor:[UIColor blackColor] target:self action:@selector(toolbarButtonClicked:) keyCode:0xA0 isToggleable:YES];
-                UIBarButtonItem *escapeBarButton = [self createButtonWithImageNamed:@"EscapeIcon.png" backgroundColor:[UIColor blackColor] target:self action:@selector(toolbarButtonClicked:) keyCode:0x1B isToggleable:NO];
-                UIBarButtonItem *controlBarButton = [self createButtonWithImageNamed:@"ControlIcon.png" backgroundColor:[UIColor blackColor] target:self action:@selector(toolbarButtonClicked:) keyCode:0xA2 isToggleable:YES];
-                UIBarButtonItem *altBarButton = [self createButtonWithImageNamed:@"AltIcon.png" backgroundColor:[UIColor blackColor] target:self action:@selector(toolbarButtonClicked:) keyCode:0xA4 isToggleable:YES];
-                UIBarButtonItem *deleteBarButton = [self createButtonWithImageNamed:@"DeleteIcon.png" backgroundColor:[UIColor blackColor] target:self action:@selector(toolbarButtonClicked:) keyCode:0x2E isToggleable:NO];
-                UIBarButtonItem *flexibleSpace = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace target:nil action:nil];
-                
-                [customToolbarView setItems:[NSArray arrayWithObjects:doneBarButton, windowsBarButton, escapeBarButton, tabBarButton, shiftBarButton, controlBarButton, altBarButton, deleteBarButton, flexibleSpace, nil]];
-                keyInputField.inputAccessoryView = customToolbarView;
+                // Prepare the two-row scrollable accessory above the keyboard for more options.
+                // Rebuilt from scratch on every keyboard open, so button "isOn" state (set via
+                // objc_setAssociatedObject below) always starts fresh/off here -- see
+                // textFieldDidEndEditing: for why that's safe (it releases any held keysDown
+                // when the keyboard closes, so host-side state and this fresh "off" agree).
+                keyInputField.inputAccessoryView = [self buildKeyboardAccessoryView];
 #endif
                 [keyInputField becomeFirstResponder];
                 [keyInputField addTarget:self action:@selector(onKeyboardPressed:) forControlEvents:UIControlEventEditingChanged];
@@ -426,21 +418,126 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
     }
 }
 
-- (UIBarButtonItem *)createButtonWithImageNamed:(NSString *)imageName backgroundColor:(UIColor *)backgroundColor target:(id)target action:(SEL)action keyCode:(NSInteger)keyCode isToggleable:(BOOL)isToggleable {
-    UIImage *image = [UIImage imageNamed:imageName];
-    UIButton *button = [UIButton buttonWithType:UIButtonTypeCustom];
-    [button setImage:image forState:UIControlStateNormal];
-    button.frame = CGRectMake(0, 0, 30, 30);
-    button.imageView.contentMode = UIViewContentModeScaleAspectFit;
-    button.imageView.backgroundColor = backgroundColor;
-    button.imageView.layer.cornerRadius = 10.0;
-    button.imageEdgeInsets = UIEdgeInsetsMake(6, 6, 6, 6);
-    [button addTarget:target action:action forControlEvents:UIControlEventTouchUpInside];
+// Builds the two-row scrollable keyboard accessory: row 1 is modifiers/navigation,
+// row 2 is the function keys. Each row is an independently-scrolling UIScrollView so
+// keys can never clip off screen regardless of orientation or key count (the old
+// UIToolbar-based bar clipped its first/last items under the iOS 26 Liquid Glass
+// toolbar layout).
+- (UIView *)buildKeyboardAccessoryView {
+    const CGFloat rowHeight = 44.0;
+    const CGFloat rowGap = 4.0;
+    const CGFloat topPadding = 4.0;
+    const CGFloat totalHeight = topPadding + rowHeight + rowGap + rowHeight;
+
+    UIView *accessory = [[UIView alloc] initWithFrame:CGRectMake(0, 0, self.bounds.size.width, totalHeight)];
+    accessory.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    accessory.backgroundColor = [UIColor clearColor];
+
+    NSArray<UIButton *> *row1 = @[
+        [self createKeyButtonWithTitle:nil symbolName:@"keyboard.chevron.compact.down" keyCode:0x00 isToggleable:NO],
+        [self createKeyButtonWithTitle:@"Win" symbolName:nil keyCode:0x5B isToggleable:YES],
+        [self createKeyButtonWithTitle:@"Esc" symbolName:nil keyCode:0x1B isToggleable:NO],
+        [self createKeyButtonWithTitle:@"Tab" symbolName:nil keyCode:0x09 isToggleable:NO],
+        [self createKeyButtonWithTitle:@"⇧ L" symbolName:nil keyCode:0xA0 isToggleable:YES],
+        [self createKeyButtonWithTitle:@"⇧ R" symbolName:nil keyCode:0xA1 isToggleable:YES],
+        [self createKeyButtonWithTitle:@"Ctrl" symbolName:nil keyCode:0xA2 isToggleable:YES],
+        [self createKeyButtonWithTitle:@"Alt" symbolName:nil keyCode:0xA4 isToggleable:YES],
+        [self createKeyButtonWithTitle:@"Del" symbolName:nil keyCode:0x2E isToggleable:NO],
+        [self createKeyButtonWithTitle:nil symbolName:@"arrow.left" keyCode:0x25 isToggleable:NO],
+        [self createKeyButtonWithTitle:nil symbolName:@"arrow.up" keyCode:0x26 isToggleable:NO],
+        [self createKeyButtonWithTitle:nil symbolName:@"arrow.down" keyCode:0x28 isToggleable:NO],
+        [self createKeyButtonWithTitle:nil symbolName:@"arrow.right" keyCode:0x27 isToggleable:NO],
+    ];
+
+    NSMutableArray<UIButton *> *row2 = [NSMutableArray arrayWithCapacity:12];
+    for (NSInteger i = 0; i < 12; i++) {
+        NSString *title = [NSString stringWithFormat:@"F%ld", (long)(i + 1)];
+        [row2 addObject:[self createKeyButtonWithTitle:title symbolName:nil keyCode:(0x70 + i) isToggleable:NO]];
+    }
+
+    UIScrollView *row1Scroll = [self buildScrollRowWithButtons:row1];
+    UIScrollView *row2Scroll = [self buildScrollRowWithButtons:row2];
+    row1Scroll.translatesAutoresizingMaskIntoConstraints = NO;
+    row2Scroll.translatesAutoresizingMaskIntoConstraints = NO;
+    [accessory addSubview:row1Scroll];
+    [accessory addSubview:row2Scroll];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [row1Scroll.topAnchor constraintEqualToAnchor:accessory.topAnchor constant:topPadding],
+        [row1Scroll.leadingAnchor constraintEqualToAnchor:accessory.leadingAnchor],
+        [row1Scroll.trailingAnchor constraintEqualToAnchor:accessory.trailingAnchor],
+        [row1Scroll.heightAnchor constraintEqualToConstant:rowHeight],
+
+        [row2Scroll.topAnchor constraintEqualToAnchor:row1Scroll.bottomAnchor constant:rowGap],
+        [row2Scroll.leadingAnchor constraintEqualToAnchor:accessory.leadingAnchor],
+        [row2Scroll.trailingAnchor constraintEqualToAnchor:accessory.trailingAnchor],
+        [row2Scroll.heightAnchor constraintEqualToConstant:rowHeight],
+    ]];
+
+    return accessory;
+}
+
+// Wraps a row of key buttons in a horizontally-scrolling, non-clipping UIScrollView.
+// Horizontal content insets respect the view's safe area so keys never land under a
+// notch/Dynamic Island in landscape.
+- (UIScrollView *)buildScrollRowWithButtons:(NSArray<UIButton *> *)buttons {
+    UIStackView *stack = [[UIStackView alloc] init];
+    stack.axis = UILayoutConstraintAxisHorizontal;
+    stack.alignment = UIStackViewAlignmentFill;
+    stack.distribution = UIStackViewDistributionEqualSpacing;
+    stack.spacing = 8.0;
+    stack.translatesAutoresizingMaskIntoConstraints = NO;
+    for (UIButton *button in buttons) {
+        [stack addArrangedSubview:button];
+    }
+
+    UIScrollView *scroll = [[UIScrollView alloc] init];
+    scroll.showsHorizontalScrollIndicator = NO;
+    scroll.showsVerticalScrollIndicator = NO;
+    scroll.alwaysBounceHorizontal = YES;
+    [scroll addSubview:stack];
+
+    CGFloat leftInset = MAX(self.safeAreaInsets.left, 8.0);
+    CGFloat rightInset = MAX(self.safeAreaInsets.right, 8.0);
+    scroll.contentInset = UIEdgeInsetsMake(0, leftInset, 0, rightInset);
+
+    [NSLayoutConstraint activateConstraints:@[
+        [stack.topAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.topAnchor],
+        [stack.bottomAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.bottomAnchor],
+        [stack.leadingAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.leadingAnchor],
+        [stack.trailingAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.trailingAnchor],
+        [stack.heightAnchor constraintEqualToAnchor:scroll.frameLayoutGuide.heightAnchor],
+    ]];
+
+    return scroll;
+}
+
+// Builds one key button. Pass either a title (text key) or an SF Symbol name (Done/arrows),
+// never both. Uses a UIButtonConfiguration instead of colouring imageView/imageEdgeInsets --
+// that old approach is what broke under the iOS 26 Liquid Glass toolbar layout.
+- (UIButton *)createKeyButtonWithTitle:(NSString *)title symbolName:(NSString *)symbolName keyCode:(NSInteger)keyCode isToggleable:(BOOL)isToggleable {
+    UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
+    UIButtonConfiguration *config = [UIButtonConfiguration grayButtonConfiguration];
+    config.contentInsets = NSDirectionalEdgeInsetsMake(6, 12, 6, 12);
+
+    if (symbolName) {
+        config.image = [UIImage systemImageNamed:symbolName];
+    } else {
+        // Monospaced digits keep F1 and F12 at consistent widths.
+        UIFont *font = [UIFont monospacedDigitSystemFontOfSize:15.0 weight:UIFontWeightSemibold];
+        config.attributedTitle = [[NSAttributedString alloc] initWithString:title attributes:@{NSFontAttributeName: font}];
+    }
+
+    button.configuration = config;
+    button.translatesAutoresizingMaskIntoConstraints = NO;
+    [button.widthAnchor constraintGreaterThanOrEqualToConstant:44.0].active = YES;
+    [button addTarget:self action:@selector(toolbarButtonClicked:) forControlEvents:UIControlEventTouchUpInside];
+
     objc_setAssociatedObject(button, "keyCode", @(keyCode), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(button, "isToggleable", @(isToggleable), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(button, "isOn", @(NO), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    UIBarButtonItem *barButton = [[UIBarButtonItem alloc] initWithCustomView:button];
-    return barButton;
+
+    return button;
 }
 
 - (void)toolbarButtonClicked:(UIButton *)sender {
@@ -448,12 +545,14 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
     BOOL isOn = [objc_getAssociatedObject(sender, "isOn") boolValue];
     if (isToggleable){
         isOn = !isOn;
-        // Update the button's appearance based on its new state
-        if (isOn) {
-            sender.imageView.backgroundColor = [UIColor lightGrayColor];
-        } else {
-            sender.imageView.backgroundColor = [UIColor blackColor];
-        }
+        // Update the button's appearance based on its new state. (Buttons are now built
+        // with a UIButtonConfiguration -- see createKeyButtonWithTitle:symbolName:keyCode:isToggleable:
+        // -- so the on/off colour is set via the configuration rather than imageView.backgroundColor.)
+#if !TARGET_OS_TV
+        UIButtonConfiguration *config = sender.configuration;
+        config.baseBackgroundColor = isOn ? [MoonlightTheme accentColor] : nil;
+        sender.configuration = config;
+#endif
     }
     // Update the new on/off state of the button
     objc_setAssociatedObject(sender, "isOn", @(isOn), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
