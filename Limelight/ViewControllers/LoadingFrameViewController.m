@@ -17,7 +17,9 @@
     [super viewDidLoad];
 
 #if !TARGET_OS_TV
-    self.view.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.25f];
+    // Dark enough to clearly read as a blocking modal state, not a faint tint
+    // that lets the card look like it's floating over whatever's behind it.
+    self.view.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.45f];
 
     UIVisualEffectView* card = [MoonlightTheme glassViewWithTint:nil];
     card.layer.cornerRadius = [MoonlightTheme cardCornerRadius];
@@ -31,11 +33,13 @@
     self.loadingSpinner.color = [UIColor labelColor];
     [card.contentView addSubview:self.loadingSpinner];
 
+    // Centred on this view controller's own view (not some ancestor's stale
+    // frame) — this is the same view the background scrim above is drawn on.
     [NSLayoutConstraint activateConstraints:@[
         [card.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
         [card.centerYAnchor constraintEqualToAnchor:self.view.centerYAnchor],
-        [card.widthAnchor constraintEqualToConstant:96],
-        [card.heightAnchor constraintEqualToConstant:96],
+        [card.widthAnchor constraintEqualToConstant:120],
+        [card.heightAnchor constraintEqualToConstant:120],
         [self.loadingSpinner.centerXAnchor constraintEqualToAnchor:card.contentView.centerXAnchor],
         [self.loadingSpinner.centerYAnchor constraintEqualToAnchor:card.contentView.centerYAnchor],
     ]];
