@@ -976,6 +976,34 @@ static NSMutableSet* hostList;
     return section;
 }
 
+- (NSCollectionLayoutSection*) makeGamesSectionForEnvironment:(id<NSCollectionLayoutEnvironment>)env {
+    CGFloat available = env.container.effectiveContentSize.width - 40;
+
+    // Aim for ~170pt-wide posters, minimum two columns on the narrowest phone.
+    NSInteger columns = MAX(2, (NSInteger)floor(available / 170.0));
+    CGFloat columnWidth = available / columns - 12;
+
+    NSCollectionLayoutSize* itemSize =
+        [NSCollectionLayoutSize sizeWithWidthDimension:[NSCollectionLayoutDimension fractionalWidthDimension:1.0 / columns]
+                                       heightDimension:[NSCollectionLayoutDimension fractionalHeightDimension:1.0]];
+    NSCollectionLayoutItem* item = [NSCollectionLayoutItem itemWithLayoutSize:itemSize];
+    item.contentInsets = NSDirectionalEdgeInsetsMake(0, 6, 0, 6);
+
+    // Box art is 3:4, plus room for two lines of name beneath it.
+    NSCollectionLayoutSize* groupSize =
+        [NSCollectionLayoutSize sizeWithWidthDimension:[NSCollectionLayoutDimension fractionalWidthDimension:1.0]
+                                       heightDimension:[NSCollectionLayoutDimension absoluteDimension:columnWidth * 4.0 / 3.0 + 44]];
+    NSCollectionLayoutGroup* group = [NSCollectionLayoutGroup horizontalGroupWithLayoutSize:groupSize
+                                                                                    subitem:item
+                                                                                      count:columns];
+
+    NSCollectionLayoutSection* section = [NSCollectionLayoutSection sectionWithGroup:group];
+    section.interGroupSpacing = 16;
+    section.contentInsets = NSDirectionalEdgeInsetsMake(0, 14, 20, 14);
+    section.boundarySupplementaryItems = @[[self makeSectionHeader]];
+    return section;
+}
+
 - (UICollectionViewLayout*) makeLayout {
     __weak MainFrameViewController* weakSelf = self;
 
@@ -994,9 +1022,10 @@ static NSMutableSet* hostList;
             case MoonlightSectionHosts:
                 return [self makeHostsSection];
             case MoonlightSectionContinue:
-            case MoonlightSectionGames:
-                // Added in later commits; until then these sections are empty.
+                // Added in a later commit; until then this section is empty.
                 return [self makeHostsSection];
+            case MoonlightSectionGames:
+                return [self makeGamesSectionForEnvironment:env];
         }
     } configuration:config];
 }
@@ -1591,7 +1620,7 @@ static NSMutableSet* hostList;
         case MoonlightSectionContinue:
             return 0;   // populated in a later commit
         case MoonlightSectionGames:
-            return 0;   // populated in a later commit
+            return _sortedAppList.count;
     }
     return 0;
 }
@@ -1610,6 +1639,10 @@ static NSMutableSet* hostList;
         else {
             [cell setTileView:[[UIComputerView alloc] initForAddWithCallback:self]];
         }
+    }
+    else if ([self sectionAtIndex:indexPath.section] == MoonlightSectionGames) {
+        TemporaryApp* app = _sortedAppList[indexPath.item];
+        [cell setTileView:[[UIAppView alloc] initWithApp:app cache:_boxArtCache andCallback:self]];
     }
 
     return cell;
