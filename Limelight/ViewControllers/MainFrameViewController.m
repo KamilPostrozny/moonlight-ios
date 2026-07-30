@@ -238,6 +238,33 @@ typedef NS_ENUM(NSInteger, MoonlightSection) {
 
 #endif
 
+// A single host action, described once and rendered as either a UIAction
+// (for the real context menu) or a UIAlertAction (for the action-sheet
+// fallback used for offline hosts and, historically, everywhere else).
+// UIAction's handler is write-only from the outside — there is no public way
+// to read a UIAction's handler back out once it's built — so a plain
+// NSArray<UIAction*> can't be shared between the two presentations. This
+// descriptor is the shared source of truth instead; hostActionsForHost:
+// builds this list exactly once.
+@interface MoonlightHostAction : NSObject
+@property (nonatomic, copy, readonly) NSString* title;
+@property (nonatomic, readonly, nullable) UIImage* image;
+@property (nonatomic, readonly) BOOL destructive;
+@property (nonatomic, copy, readonly) void (^handler)(void);
++ (instancetype) actionWithTitle:(NSString*)title image:(nullable UIImage*)image destructive:(BOOL)destructive handler:(void (^)(void))handler;
+@end
+
+@implementation MoonlightHostAction
++ (instancetype) actionWithTitle:(NSString*)title image:(UIImage*)image destructive:(BOOL)destructive handler:(void (^)(void))handler {
+    MoonlightHostAction* action = [[MoonlightHostAction alloc] init];
+    action->_title = [title copy];
+    action->_image = image;
+    action->_destructive = destructive;
+    action->_handler = [handler copy];
+    return action;
+}
+@end
+
 @implementation MainFrameViewController {
     NSOperationQueue* _opQueue;
     TemporaryHost* _selectedHost;
@@ -653,12 +680,12 @@ static NSMutableSet* hostList;
 // fallback UI) and collectionView:contextMenuConfigurationForItemAtIndexPath:point:
 // (the real context menu). Keeping a single definition means the two can't
 // drift out of sync with each other.
-- (NSArray<UIAction*>*) hostActionsForHost:(TemporaryHost*)host {
+- (NSArray<MoonlightHostAction*>*) hostActionsForHost:(TemporaryHost*)host {
     __weak typeof(self) weakSelf = self;
-    NSMutableArray<UIAction*>* actions = [NSMutableArray array];
+    NSMutableArray<MoonlightHostAction*>* actions = [NSMutableArray array];
 
     if (host.state != StateOnline) {
-        [actions addObject:[UIAction actionWithTitle:@"Wake PC" image:nil identifier:nil handler:^(UIAction* action){
+        [actions addObject:[MoonlightHostAction actionWithTitle:@"Wake PC" image:nil destructive:NO handler:^{
             typeof(self) strongSelf = weakSelf;
             if (strongSelf == nil) {
                 return;
@@ -678,13 +705,13 @@ static NSMutableSet* hostList;
     }
 #if !TARGET_OS_TV
     else if (host.pairState == PairStatePaired && host.isNvidiaServerSoftware) {
-        [actions addObject:[UIAction actionWithTitle:@"NVIDIA GameStream End-of-Service" image:nil identifier:nil handler:^(UIAction* action){
+        [actions addObject:[MoonlightHostAction actionWithTitle:@"NVIDIA GameStream End-of-Service" image:nil destructive:NO handler:^{
             [Utils launchUrl:@"https://github.com/moonlight-stream/moonlight-docs/wiki/NVIDIA-GameStream-End-Of-Service-Announcement-FAQ"];
         }]];
     }
 #endif
 
-    [actions addObject:[UIAction actionWithTitle:@"Test Network" image:[UIImage systemImageNamed:@"network"] identifier:nil handler:^(UIAction* action) {
+    [actions addObject:[MoonlightHostAction actionWithTitle:@"Test Network" image:[UIImage systemImageNamed:@"network"] destructive:NO handler:^{
         typeof(self) strongSelf = weakSelf;
         if (strongSelf == nil) {
             return;
@@ -694,24 +721,22 @@ static NSMutableSet* hostList;
 
 #if !TARGET_OS_TV
     if (host.state != StateOnline) {
-        [actions addObject:[UIAction actionWithTitle:@"NVIDIA GameStream End-of-Service" image:nil identifier:nil handler:^(UIAction* action){
+        [actions addObject:[MoonlightHostAction actionWithTitle:@"NVIDIA GameStream End-of-Service" image:nil destructive:NO handler:^{
             [Utils launchUrl:@"https://github.com/moonlight-stream/moonlight-docs/wiki/NVIDIA-GameStream-End-Of-Service-Announcement-FAQ"];
         }]];
-        [actions addObject:[UIAction actionWithTitle:@"Connection Help" image:[UIImage systemImageNamed:@"questionmark.circle"] identifier:nil handler:^(UIAction* action){
+        [actions addObject:[MoonlightHostAction actionWithTitle:@"Connection Help" image:[UIImage systemImageNamed:@"questionmark.circle"] destructive:NO handler:^{
             [Utils launchUrl:@"https://github.com/moonlight-stream/moonlight-docs/wiki/Troubleshooting"];
         }]];
     }
 #endif
 
-    UIAction* remove = [UIAction actionWithTitle:@"Remove PC" image:[UIImage systemImageNamed:@"trash"] identifier:nil handler:^(UIAction* action) {
+    [actions addObject:[MoonlightHostAction actionWithTitle:@"Remove PC" image:[UIImage systemImageNamed:@"trash"] destructive:YES handler:^{
         typeof(self) strongSelf = weakSelf;
         if (strongSelf == nil) {
             return;
         }
         [strongSelf removeHost:host];
-    }];
-    remove.attributes = UIMenuElementAttributesDestructive;
-    [actions addObject:remove];
+    }]];
 
     return actions;
 }
@@ -746,10 +771,10 @@ static NSMutableSet* hostList;
 
     // Map the shared action list onto UIAlertActions rather than keeping a
     // second, independent definition of the host's actions.
-    for (UIAction* action in [self hostActionsForHost:host]) {
-        UIAlertActionStyle style = (action.attributes & UIMenuElementAttributesDestructive) ? UIAlertActionStyleDestructive : UIAlertActionStyleDefault;
+    for (MoonlightHostAction* action in [self hostActionsForHost:host]) {
+        UIAlertActionStyle style = action.destructive ? UIAlertActionStyleDestructive : UIAlertActionStyleDefault;
         [longClickAlert addAction:[UIAlertAction actionWithTitle:action.title style:style handler:^(UIAlertAction* alertAction) {
-            action.handler(action);
+            action.handler();
         }]];
     }
 
@@ -1429,7 +1454,18 @@ static NSMutableSet* hostList;
         if (strongSelf == nil) {
             return nil;
         }
-        return [UIMenu menuWithTitle:host.name children:[strongSelf hostActionsForHost:host]];
+
+        NSMutableArray<UIAction*>* menuActions = [NSMutableArray array];
+        for (MoonlightHostAction* action in [strongSelf hostActionsForHost:host]) {
+            UIAction* menuAction = [UIAction actionWithTitle:action.title image:action.image identifier:nil handler:^(UIAction* a) {
+                action.handler();
+            }];
+            if (action.destructive) {
+                menuAction.attributes = UIMenuElementAttributesDestructive;
+            }
+            [menuActions addObject:menuAction];
+        }
+        return [UIMenu menuWithTitle:host.name children:menuActions];
     }];
 }
 #endif
