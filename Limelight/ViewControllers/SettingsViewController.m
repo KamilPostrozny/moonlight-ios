@@ -136,12 +136,24 @@ BOOL isCustomResolution(CGSize res) {
     // Ensure we pick a bitrate that falls exactly onto a slider notch
     _bitrate = bitrateTable[[self getSliderValueForBitrate:[currentSettings.bitrate intValue]]];
 
-    // Get the size of the screen with and without safe area insets
+    // Get the size of the screen with and without safe area insets.
+    //
+    // Streaming is always landscape, but this view (browsing) now rotates, so
+    // window.frame's width/height swap depending on the device's current
+    // orientation. Derive the streaming width/height from the window's
+    // long/short axis instead of "whichever is currently .width" — otherwise
+    // a resolution picked in one orientation stops matching in the other and
+    // the row silently falls through to the custom entry.
     UIWindow *window = UIApplication.sharedApplication.windows.firstObject;
     CGFloat screenScale = window.screen.scale;
-    CGFloat safeAreaWidth = (window.frame.size.width - window.safeAreaInsets.left - window.safeAreaInsets.right) * screenScale;
-    CGFloat fullScreenWidth = window.frame.size.width * screenScale;
-    CGFloat fullScreenHeight = window.frame.size.height * screenScale;
+    CGFloat rawWidth = window.frame.size.width;
+    CGFloat rawHeight = window.frame.size.height;
+    CGFloat streamWidthPoints = MAX(rawWidth, rawHeight);
+    CGFloat streamHeightPoints = MIN(rawWidth, rawHeight);
+
+    CGFloat safeAreaWidth = (streamWidthPoints - window.safeAreaInsets.left - window.safeAreaInsets.right) * screenScale;
+    CGFloat fullScreenWidth = streamWidthPoints * screenScale;
+    CGFloat fullScreenHeight = streamHeightPoints * screenScale;
 
     resolutionTable[0] = CGSizeMake(640, 360);
     resolutionTable[1] = CGSizeMake(1280, 720);
@@ -234,6 +246,15 @@ BOOL isCustomResolution(CGSize res) {
     config.title = title;
     config.baseForegroundColor = [UIColor secondaryLabelColor];
     config.contentInsets = NSDirectionalEdgeInsetsZero;
+
+    // Give the row the standard pop-up affordance so it reads as tappable
+    // rather than static text.
+    config.image = [UIImage systemImageNamed:@"chevron.up.chevron.down"];
+    config.imagePlacement = NSDirectionalRectEdgeTrailing;
+    config.imagePadding = 6.0f;
+    config.preferredSymbolConfigurationForImage =
+        [UIImageSymbolConfiguration configurationWithPointSize:11 weight:UIImageSymbolWeightSemibold];
+
     button.configuration = config;
     button.menu = menu;
     button.showsMenuAsPrimaryAction = YES;
@@ -252,14 +273,28 @@ BOOL isCustomResolution(CGSize res) {
     return row;
 }
 
+// The row's displayed value: plain names for the fixed entries, but actual
+// pixel dimensions for the two device-derived entries (Safe Area, Full
+// Screen) and the custom entry, since "Safe Area" on its own doesn't tell
+// the user what they picked.
 - (NSString*) resolutionTitleForIndex:(NSInteger)index {
-    NSArray<NSString*>* names = @[@"360p", @"720p", @"1080p", @"4K", @"Safe Area", @"Full Screen"];
+    NSArray<NSString*>* names = @[@"360p", @"720p", @"1080p", @"4K"];
     if (index < names.count) {
         return names[index];
     }
     return [NSString stringWithFormat:@"%d × %d",
-            (int)resolutionTable[RESOLUTION_TABLE_CUSTOM_INDEX].width,
-            (int)resolutionTable[RESOLUTION_TABLE_CUSTOM_INDEX].height];
+            (int)resolutionTable[index].width,
+            (int)resolutionTable[index].height];
+}
+
+// The menu's entry label: keeps "Safe Area" / "Full Screen" understandable
+// as choices, even though the row itself now shows their dimensions.
+- (NSString*) resolutionMenuTitleForIndex:(NSInteger)index {
+    NSArray<NSString*>* names = @[@"360p", @"720p", @"1080p", @"4K", @"Safe Area", @"Full Screen"];
+    if (index < names.count) {
+        return names[index];
+    }
+    return [self resolutionTitleForIndex:index];
 }
 
 - (UIMenu*) resolutionMenu {
@@ -272,7 +307,7 @@ BOOL isCustomResolution(CGSize res) {
             continue;
         }
 
-        NSString* title = (i == RESOLUTION_TABLE_CUSTOM_INDEX) ? @"Custom…" : [self resolutionTitleForIndex:i];
+        NSString* title = (i == RESOLUTION_TABLE_CUSTOM_INDEX) ? @"Custom…" : [self resolutionMenuTitleForIndex:i];
         UIAction* action = [UIAction actionWithTitle:title image:nil identifier:nil handler:^(UIAction* a) {
             typeof(self) strongSelf = weakSelf;
             if (strongSelf == nil) {
@@ -410,8 +445,8 @@ BOOL isCustomResolution(CGSize res) {
     [NSLayoutConstraint activateConstraints:@[
         [stack.topAnchor constraintEqualToAnchor:container.topAnchor constant:10],
         [stack.bottomAnchor constraintEqualToAnchor:container.bottomAnchor constant:-10],
-        [stack.leadingAnchor constraintEqualToAnchor:container.layoutMarginsGuide.leadingAnchor],
-        [stack.trailingAnchor constraintEqualToAnchor:container.layoutMarginsGuide.trailingAnchor],
+        [stack.leadingAnchor constraintEqualToAnchor:container.leadingAnchor],
+        [stack.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
     ]];
 
     [self updateBitrateText];
@@ -764,6 +799,18 @@ BOOL isCustomResolution(CGSize res) {
         cell.accessoryView = nil;
         cell.selectionStyle = UITableViewCellSelectionStyleNone;
 
+        // A reused "customRow" cell may still hold a *previous* row's custom
+        // view (e.g. an earlier bitrateRowView instance from before
+        // rebuildRows rebuilt it). Strip anything that isn't the current
+        // row's view. This is safe here — and only here — because the
+        // "customRow" identifier is never used for a contentConfiguration
+        // cell, so there's no UIListContentView to destroy.
+        for (UIView* subview in [cell.contentView.subviews copy]) {
+            if (subview != row.custom) {
+                [subview removeFromSuperview];
+            }
+        }
+
         if (row.custom.superview != cell.contentView) {
             [row.custom removeFromSuperview];
             row.custom.translatesAutoresizingMaskIntoConstraints = NO;
@@ -771,8 +818,8 @@ BOOL isCustomResolution(CGSize res) {
             [NSLayoutConstraint activateConstraints:@[
                 [row.custom.topAnchor constraintEqualToAnchor:cell.contentView.topAnchor],
                 [row.custom.bottomAnchor constraintEqualToAnchor:cell.contentView.bottomAnchor],
-                [row.custom.leadingAnchor constraintEqualToAnchor:cell.contentView.leadingAnchor],
-                [row.custom.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor],
+                [row.custom.leadingAnchor constraintEqualToAnchor:cell.contentView.layoutMarginsGuide.leadingAnchor],
+                [row.custom.trailingAnchor constraintEqualToAnchor:cell.contentView.layoutMarginsGuide.trailingAnchor],
             ]];
         }
         return cell;
