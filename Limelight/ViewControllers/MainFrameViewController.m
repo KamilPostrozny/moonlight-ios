@@ -238,6 +238,7 @@ typedef NS_ENUM(NSInteger, MoonlightSection) {
     NSArray<NSNumber*>* _sections;
     NSArray<TemporaryHost*>* _sortedHostList;
     NSArray* _sortedAppList;
+    TemporaryApp* _continueApp;
     NSCache* _boxArtCache;
     bool _background;
     NSString* _deepLinkAppQuery;
@@ -478,6 +479,7 @@ static NSMutableSet* hostList;
     _showHiddenApps = NO;
     _selectedHost = nil;
     _sortedAppList = nil;
+    _continueApp = nil;
 
     // Abandon any pending deep link. We get here when connecting to the host
     // failed, or when the user navigated back, so it must not fire later
@@ -1107,8 +1109,15 @@ static NSMutableSet* hostList;
 - (void) rebuildSections {
     NSMutableArray<NSNumber*>* sections = [NSMutableArray arrayWithObject:@(MoonlightSectionHosts)];
 
+    // Read findRunningApp: exactly once and let both the section's existence
+    // and its content (numberOfItemsInSection:/cellForItemAtIndexPath:) derive
+    // from this single snapshot. currentGame can change on a background thread
+    // (DiscoveryWorker's poll) at any time, so re-querying at each call site
+    // would let the section's existence and its content disagree.
+    _continueApp = _selectedHost != nil ? [self findRunningApp:_selectedHost] : nil;
+
     if (_selectedHost != nil) {
-        if ([self findRunningApp:_selectedHost] != nil) {
+        if (_continueApp != nil) {
             [sections addObject:@(MoonlightSectionContinue)];
         }
         [sections addObject:@(MoonlightSectionGames)];
@@ -1818,7 +1827,7 @@ static NSMutableSet* hostList;
             // Every host, plus the trailing "Add PC" tile.
             return _sortedHostList.count + 1;
         case MoonlightSectionContinue:
-            return 1;
+            return _continueApp != nil ? 1 : 0;
         case MoonlightSectionGames:
             return _sortedAppList.count;
     }
@@ -1828,16 +1837,19 @@ static NSMutableSet* hostList;
 // ponytail: rebuilds the tile view on every dequeue instead of reconfiguring; add a -configureForHost: reuse path if a large host list ever scrolls badly.
 - (UICollectionViewCell*) collectionView:(UICollectionView*)collectionView cellForItemAtIndexPath:(NSIndexPath*)indexPath {
     if ([self sectionAtIndex:indexPath.section] == MoonlightSectionContinue) {
-        TemporaryApp* running = [self findRunningApp:_selectedHost];
+        // Single source of truth: numberOfItemsInSection: already answered
+        // "does this section have an item?" from _continueApp, so read the
+        // same ivar here rather than re-querying findRunningApp: at a later,
+        // unsynchronized moment. Capture it in a local so the blocks below
+        // stay bound to the app this cell was actually configured with, not
+        // to whatever _continueApp holds by the time a button is tapped.
+        TemporaryApp* running = _continueApp;
         MoonlightHeroCell* hero = [collectionView dequeueReusableCellWithReuseIdentifier:@"hero" forIndexPath:indexPath];
 
         if (running == nil) {
-            // The host's currentGame is updated by a background discovery poll
-            // (DiscoveryWorker) independently of rebuildSections, which decided
-            // this section should exist. If the game quit from another device
-            // in between, don't hand a nil app to the hero cell's actions; the
-            // next reload (triggered by whatever changed currentGame) will drop
-            // this section anyway.
+            // Should be unreachable now that both readers agree on
+            // _continueApp, but stay defensive rather than hand a nil app
+            // to the hero cell's actions.
             hero.onResume = nil;
             hero.onQuit = nil;
             return hero;
@@ -1850,12 +1862,18 @@ static NSMutableSet* hostList;
         __weak MainFrameViewController* weakSelf = self;
         hero.onResume = ^{
             MainFrameViewController* strongSelf = weakSelf;
+            if (strongSelf == nil) {
+                return;
+            }
             [strongSelf->_appManager stopRetrieving];
             [strongSelf prepareToStreamApp:running];
             [strongSelf performSegueWithIdentifier:@"createStreamFrame" sender:nil];
         };
         hero.onQuit = ^{
             MainFrameViewController* strongSelf = weakSelf;
+            if (strongSelf == nil) {
+                return;
+            }
             [strongSelf quitRunningApp:running then:^{
                 [strongSelf updateAppsForHost:strongSelf->_selectedHost];
             }];
