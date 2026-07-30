@@ -24,7 +24,17 @@ Every task's requirements implicitly include this section.
 - **Know which files tvOS compiles.** Verified from the two `Sources` build phases in `project.pbxproj`:
   - **Both targets:** `Utils.m`, `MainFrameViewController.m`, `UIAppView.m`, `UIComputerView.m`, `LoadingFrameViewController.m`, `StreamFrameViewController.m`, `ComputerScrollView.m`. New code in these needs `#if !TARGET_OS_TV`, and deleting an unguarded symbol the tvOS branch still uses breaks that target.
   - **iOS only:** `SettingsViewController.m`, `SWRevealViewController.m`. No guards are needed in these; the `#if TARGET_OS_TV` blocks already inside `SettingsViewController.m` are dead code.
-  - Nothing builds the tvOS target, so a break there is invisible. Do not go out of your way to preserve it, but do not break it gratuitously either.
+  - Nothing builds the tvOS target, so a break there is invisible.
+  - **Ruling (Kamil, during Task 4): accept tvOS rot.** Task 4 deleted
+    `hostScrollView`, which was tvOS's only host picker, and there is no
+    replacement — the new PCs section is inside `#if !TARGET_OS_TV`. tvOS is
+    therefore functionally broken from Task 4 onward, and later tasks will
+    break it further. Keep the `#if` guards, because they are what keeps the
+    iOS side clean and unambiguous, but **do not spend effort preserving tvOS
+    behaviour.** Any such preservation would be unverifiable by construction:
+    CI does not build the tvOS scheme, so it buys the appearance of safety
+    rather than safety. Where a shared method must exist for both targets,
+    give tvOS the simplest thing that compiles (e.g. plain `reloadData`).
 - **Glass API surface is restricted to three names:** `UIGlassEffect`, `+[UIButtonConfiguration glassButtonConfiguration]`, `+[UIButtonConfiguration prominentGlassButtonConfiguration]`. All three are used only inside `MoonlightTheme` (Task 2). Corner rounding uses `layer.cornerRadius` + `layer.cornerCurve = kCACornerCurveContinuous`, **not** `UICornerConfiguration` — this deviates from the spec deliberately to shrink the surface of API names that cannot be checked by a local compiler.
 - **Accent colour:** `[UIColor colorWithRed:0.67f green:0.62f blue:1.0f alpha:1.0f]`. Always via `[MoonlightTheme accentColor]`, never inline.
 - **Branch:** all work happens on `liquid-glass-redesign`, branched from `master`.
