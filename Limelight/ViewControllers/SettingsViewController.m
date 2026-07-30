@@ -215,6 +215,7 @@ BOOL isCustomResolution(CGSize res) {
     _tableView.delegate = self;
     _tableView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     [_tableView registerClass:[UITableViewCell class] forCellReuseIdentifier:@"row"];
+    [_tableView registerClass:[UITableViewCell class] forCellReuseIdentifier:@"customRow"];
     [self.view addSubview:_tableView];
 }
 
@@ -236,6 +237,11 @@ BOOL isCustomResolution(CGSize res) {
     button.configuration = config;
     button.menu = menu;
     button.showsMenuAsPrimaryAction = YES;
+
+    // accessoryView is laid out from its frame, not by Auto Layout, and a
+    // button from buttonWithType: starts at CGRectZero.
+    button.frame = (CGRect){CGPointZero, [button systemLayoutSizeFittingSize:UILayoutFittingCompressedSize]};
+
     return button;
 }
 
@@ -748,32 +754,44 @@ BOOL isCustomResolution(CGSize res) {
 
 - (UITableViewCell*) tableView:(UITableView*)tableView cellForRowAtIndexPath:(NSIndexPath*)indexPath {
     MoonlightSettingsRow* row = _rows[indexPath.section][indexPath.row];
-    UITableViewCell* cell = [tableView dequeueReusableCellWithIdentifier:@"row" forIndexPath:indexPath];
 
-    for (UIView* subview in [cell.contentView.subviews copy]) {
-        [subview removeFromSuperview];
-    }
-    cell.accessoryView = nil;
-    cell.selectionStyle = row.action ? UITableViewCellSelectionStyleDefault : UITableViewCellSelectionStyleNone;
-
+    // Custom rows and configuration rows use separate reuse identifiers. Reusing
+    // one as the other means clearing contentView, which destroys the
+    // UIListContentView UIKit installs for a contentConfiguration and leaves the
+    // row blank.
     if (row.custom != nil) {
-        cell.contentConfiguration = nil;
-        row.custom.translatesAutoresizingMaskIntoConstraints = NO;
-        [cell.contentView addSubview:row.custom];
-        [NSLayoutConstraint activateConstraints:@[
-            [row.custom.topAnchor constraintEqualToAnchor:cell.contentView.topAnchor],
-            [row.custom.bottomAnchor constraintEqualToAnchor:cell.contentView.bottomAnchor],
-            [row.custom.leadingAnchor constraintEqualToAnchor:cell.contentView.leadingAnchor],
-            [row.custom.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor],
-        ]];
+        UITableViewCell* cell = [tableView dequeueReusableCellWithIdentifier:@"customRow" forIndexPath:indexPath];
+        cell.accessoryView = nil;
+        cell.selectionStyle = UITableViewCellSelectionStyleNone;
+
+        if (row.custom.superview != cell.contentView) {
+            [row.custom removeFromSuperview];
+            row.custom.translatesAutoresizingMaskIntoConstraints = NO;
+            [cell.contentView addSubview:row.custom];
+            [NSLayoutConstraint activateConstraints:@[
+                [row.custom.topAnchor constraintEqualToAnchor:cell.contentView.topAnchor],
+                [row.custom.bottomAnchor constraintEqualToAnchor:cell.contentView.bottomAnchor],
+                [row.custom.leadingAnchor constraintEqualToAnchor:cell.contentView.leadingAnchor],
+                [row.custom.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor],
+            ]];
+        }
         return cell;
     }
+
+    UITableViewCell* cell = [tableView dequeueReusableCellWithIdentifier:@"row" forIndexPath:indexPath];
 
     UIListContentConfiguration* content = [UIListContentConfiguration valueCellConfiguration];
     content.text = row.title;
     content.secondaryText = row.subtitle;
     cell.contentConfiguration = content;
-    cell.accessoryView = row.accessory;
+    cell.selectionStyle = row.action ? UITableViewCellSelectionStyleDefault : UITableViewCellSelectionStyleNone;
+
+    // Defensive: any accessory that still has no frame gets sized here.
+    UIView* accessory = row.accessory;
+    if (accessory != nil && CGRectIsEmpty(accessory.frame)) {
+        accessory.frame = (CGRect){CGPointZero, [accessory systemLayoutSizeFittingSize:UILayoutFittingCompressedSize]};
+    }
+    cell.accessoryView = accessory;
 
     return cell;
 }
