@@ -12,6 +12,7 @@
 #import "StreamManager.h"
 #import "ControllerSupport.h"
 #import "DataManager.h"
+#import "Utils.h"
 
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -39,7 +40,13 @@
     UITapGestureRecognizer *_menuTapGestureRecognizer;
     UITapGestureRecognizer *_menuDoubleTapGestureRecognizer;
     UITapGestureRecognizer *_playPauseTapGestureRecognizer;
+#if !TARGET_OS_TV
+    UIVisualEffectView *_overlayView;
+    UILabel *_overlayLabel;
+    UIVisualEffectView *_startupCard;
+#else
     UITextView *_overlayView;
+#endif
     UILabel *_stageLabel;
     UILabel *_tipLabel;
     UIActivityIndicatorView *_spinner;
@@ -47,7 +54,7 @@
     UIScrollView *_scrollView;
     BOOL _userIsInteracting;
     CGSize _keyboardSize;
-    
+
 #if !TARGET_OS_TV
     UIScreenEdgePanGestureRecognizer *_exitSwipeRecognizer;
 #endif
@@ -82,8 +89,7 @@
     [_stageLabel sizeToFit];
     _stageLabel.textAlignment = NSTextAlignmentCenter;
     _stageLabel.textColor = [UIColor whiteColor];
-    _stageLabel.center = CGPointMake(self.view.frame.size.width / 2, self.view.frame.size.height / 2);
-    
+
     _spinner = [[UIActivityIndicatorView alloc] init];
     [_spinner setUserInteractionEnabled:NO];
 #if TARGET_OS_TV
@@ -93,8 +99,7 @@
 #endif
     [_spinner sizeToFit];
     [_spinner startAnimating];
-    _spinner.center = CGPointMake(self.view.frame.size.width / 2, self.view.frame.size.height / 2 - _stageLabel.frame.size.height - _spinner.frame.size.height);
-    
+
     _controllerSupport = [[ControllerSupport alloc] initWithConfig:self.streamConfig delegate:self];
     _inactivityTimer = nil;
     
@@ -140,8 +145,7 @@
     [_tipLabel sizeToFit];
     _tipLabel.textColor = [UIColor whiteColor];
     _tipLabel.textAlignment = NSTextAlignmentCenter;
-    _tipLabel.center = CGPointMake(self.view.frame.size.width / 2, self.view.frame.size.height * 0.9);
-    
+
     _streamMan = [[StreamManager alloc] initWithConfig:self.streamConfig
                                             renderView:_streamView
                                    connectionCallbacks:self];
@@ -197,9 +201,37 @@
         [self.view addSubview:_streamView];
     }
     
+#if !TARGET_OS_TV
+    _startupCard = [MoonlightTheme glassViewWithTint:nil];
+    _startupCard.layer.cornerRadius = [MoonlightTheme cardCornerRadius];
+    _startupCard.layer.cornerCurve = kCACornerCurveContinuous;
+    _startupCard.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.view addSubview:_startupCard];
+
+    _stageLabel.numberOfLines = 0;
+    _tipLabel.numberOfLines = 0;
+
+    UIStackView* stack = [[UIStackView alloc] initWithArrangedSubviews:@[_spinner, _stageLabel, _tipLabel]];
+    stack.axis = UILayoutConstraintAxisVertical;
+    stack.alignment = UIStackViewAlignmentCenter;
+    stack.spacing = 12;
+    stack.translatesAutoresizingMaskIntoConstraints = NO;
+    [_startupCard.contentView addSubview:stack];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [_startupCard.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
+        [_startupCard.centerYAnchor constraintEqualToAnchor:self.view.centerYAnchor],
+        [_startupCard.widthAnchor constraintLessThanOrEqualToAnchor:self.view.widthAnchor multiplier:0.8],
+        [stack.topAnchor constraintEqualToAnchor:_startupCard.contentView.topAnchor constant:24],
+        [stack.bottomAnchor constraintEqualToAnchor:_startupCard.contentView.bottomAnchor constant:-24],
+        [stack.leadingAnchor constraintEqualToAnchor:_startupCard.contentView.leadingAnchor constant:24],
+        [stack.trailingAnchor constraintEqualToAnchor:_startupCard.contentView.trailingAnchor constant:-24],
+    ]];
+#else
     [self.view addSubview:_stageLabel];
     [self.view addSubview:_spinner];
     [self.view addSubview:_tipLabel];
+#endif
 }
 
 - (UIView *)viewForZoomingInScrollView:(UIScrollView *)scrollView {
@@ -253,31 +285,60 @@
 }
 
 - (void)updateOverlayText:(NSString*)text {
+#if !TARGET_OS_TV
+    if (_overlayView == nil) {
+        _overlayView = [MoonlightTheme glassViewWithTint:nil];
+        _overlayView.layer.cornerRadius = 14;
+        _overlayView.layer.cornerCurve = kCACornerCurveContinuous;
+        _overlayView.userInteractionEnabled = NO;
+        _overlayView.translatesAutoresizingMaskIntoConstraints = NO;
+        [self.view addSubview:_overlayView];
+
+        _overlayLabel = [[UILabel alloc] init];
+        _overlayLabel.font = [UIFont monospacedDigitSystemFontOfSize:12 weight:UIFontWeightRegular];
+        _overlayLabel.textColor = [UIColor labelColor];
+        _overlayLabel.numberOfLines = 0;
+        _overlayLabel.translatesAutoresizingMaskIntoConstraints = NO;
+        [_overlayView.contentView addSubview:_overlayLabel];
+
+        [NSLayoutConstraint activateConstraints:@[
+            [_overlayView.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:12],
+            [_overlayView.leadingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.leadingAnchor constant:12],
+            [_overlayLabel.topAnchor constraintEqualToAnchor:_overlayView.contentView.topAnchor constant:8],
+            [_overlayLabel.bottomAnchor constraintEqualToAnchor:_overlayView.contentView.bottomAnchor constant:-8],
+            [_overlayLabel.leadingAnchor constraintEqualToAnchor:_overlayView.contentView.leadingAnchor constant:12],
+            [_overlayLabel.trailingAnchor constraintEqualToAnchor:_overlayView.contentView.trailingAnchor constant:-12],
+        ]];
+    }
+#else
     if (_overlayView == nil) {
         _overlayView = [[UITextView alloc] init];
-#if !TARGET_OS_TV
-        [_overlayView setEditable:NO];
-#endif
         [_overlayView setUserInteractionEnabled:NO];
         [_overlayView setSelectable:NO];
         [_overlayView setScrollEnabled:NO];
-        
+
         // HACK: If not using stats overlay, center the text
         if (_statsUpdateTimer == nil) {
             [_overlayView setTextAlignment:NSTextAlignmentCenter];
         }
-        
+
         [_overlayView setTextColor:[UIColor lightGrayColor]];
         [_overlayView setBackgroundColor:[UIColor blackColor]];
-#if TARGET_OS_TV
         [_overlayView setFont:[UIFont systemFontOfSize:24]];
-#else
-        [_overlayView setFont:[UIFont systemFontOfSize:12]];
-#endif
         [_overlayView setAlpha:0.5];
         [self.view addSubview:_overlayView];
     }
-    
+#endif
+
+#if !TARGET_OS_TV
+    if (text != nil) {
+        _overlayLabel.text = text;
+        _overlayView.hidden = NO;
+    }
+    else {
+        _overlayView.hidden = YES;
+    }
+#else
     if (text != nil) {
         // We set our bounds to the maximum width in order to work around a bug where
         // sizeToFit interacts badly with the UITextView's line breaks, causing the
@@ -294,6 +355,7 @@
     else {
         [_overlayView setHidden:YES];
     }
+#endif
 }
 
 - (void) returnToMainFrame {
@@ -365,7 +427,10 @@
         // the first frame of video.
         self->_stageLabel.hidden = YES;
         self->_tipLabel.hidden = YES;
-        
+#if !TARGET_OS_TV
+        self->_startupCard.hidden = YES;
+#endif
+
         [self->_streamView showOnScreenControls];
         
         [self->_controllerSupport connectionEstablished];
@@ -467,8 +532,10 @@
         NSString* lowerCase = [NSString stringWithFormat:@"%s in progress...", stageName];
         NSString* titleCase = [[[lowerCase substringToIndex:1] uppercaseString] stringByAppendingString:[lowerCase substringFromIndex:1]];
         [self->_stageLabel setText:titleCase];
+#if TARGET_OS_TV
         [self->_stageLabel sizeToFit];
         self->_stageLabel.center = CGPointMake(self.view.frame.size.width / 2, self->_stageLabel.center.y);
+#endif
     });
 }
 
