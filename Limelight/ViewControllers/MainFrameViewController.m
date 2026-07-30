@@ -6,6 +6,7 @@
 //
 
 @import ImageIO;
+@import QuartzCore;
 
 #import "MainFrameViewController.h"
 #import "CryptoManager.h"
@@ -248,6 +249,10 @@ typedef NS_ENUM(NSInteger, MoonlightSection) {
     bool _background;
     NSString* _deepLinkAppQuery;
     NSString* _searchText;
+#if !TARGET_OS_TV
+    NSCache* _ambientCache;
+    CAGradientLayer* _ambientLayer;
+#endif
 #if TARGET_OS_TV
     UITapGestureRecognizer* _menuRecognizer;
 #endif
@@ -1136,7 +1141,52 @@ static NSMutableSet* hostList;
 - (void) reloadEverything {
     [self rebuildSections];
     [self.collectionView reloadData];
+    [self updateAmbientBackground];
     [self updateEmptyState];
+}
+
+- (UIColor*) ambientColorForApp:(TemporaryApp*)app {
+    if (app == nil) {
+        return nil;
+    }
+
+    UIColor* cached = [_ambientCache objectForKey:app];
+    if (cached != nil) {
+        return cached;
+    }
+
+    // Not sampled yet — compute it now from whatever art we already decoded.
+    UIColor* ambient = [MoonlightTheme ambientColorForImage:[_boxArtCache objectForKey:app]];
+    if (ambient != nil) {
+        [_ambientCache setObject:ambient forKey:app];
+    }
+    return ambient;
+}
+
+- (void) updateAmbientBackground {
+    // The running game owns the tint; otherwise the first game in the grid
+    // does. Read _continueApp rather than calling findRunningApp: again:
+    // rebuildSections (called just above, in reloadEverything) already took
+    // the single snapshot of host.currentGame for this refresh, and
+    // re-deriving it here could disagree with that snapshot if the
+    // background DiscoveryWorker poll mutates currentGame in between.
+    TemporaryApp* source = _continueApp;
+    if (source == nil) {
+        source = _sortedAppList.firstObject;
+    }
+
+    UIColor* ambient = [self ambientColorForApp:source] ?: [MoonlightTheme accentColor];
+
+    NSArray* colors = @[(id)[ambient colorWithAlphaComponent:0.38f].CGColor,
+                        (id)[ambient colorWithAlphaComponent:0.0f].CGColor];
+
+    CABasicAnimation* fade = [CABasicAnimation animationWithKeyPath:@"colors"];
+    fade.fromValue = _ambientLayer.colors;
+    fade.toValue = colors;
+    fade.duration = 0.45;
+
+    _ambientLayer.colors = colors;
+    [_ambientLayer addAnimation:fade forKey:@"ambient"];
 }
 
 - (void) updateEmptyState {
@@ -1326,6 +1376,20 @@ static NSMutableSet* hostList;
     // query the data source, which indexes into _sections.
     [self rebuildSections];
 
+    _ambientCache = [[NSCache alloc] init];
+
+    _ambientLayer = [CAGradientLayer layer];
+    _ambientLayer.type = kCAGradientLayerRadial;
+    _ambientLayer.startPoint = CGPointMake(0.5, 0.0);
+    _ambientLayer.endPoint = CGPointMake(1.4, 1.4);
+    _ambientLayer.colors = @[(id)[UIColor clearColor].CGColor, (id)[UIColor clearColor].CGColor];
+
+    UIView* backdrop = [[UIView alloc] initWithFrame:self.collectionView.bounds];
+    backdrop.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    backdrop.userInteractionEnabled = NO;
+    [backdrop.layer addSublayer:_ambientLayer];
+    self.collectionView.backgroundView = backdrop;
+
     self.collectionView.backgroundColor = [UIColor systemBackgroundColor];
     self.collectionView.alwaysBounceVertical = YES;
     [self.collectionView registerClass:[MoonlightTileCell class]
@@ -1403,6 +1467,19 @@ static NSMutableSet* hostList;
         [self reloadEverything];
 #endif
     }
+}
+
+- (void) viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+
+#if !TARGET_OS_TV
+    // CALayer has no autoresizing, and the implicit animation on a bounds
+    // change would make the tint lag behind rotation.
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    _ambientLayer.frame = self.collectionView.backgroundView.bounds;
+    [CATransaction commit];
+#endif
 }
 
 #if TARGET_OS_TV
@@ -1641,7 +1718,10 @@ static NSMutableSet* hostList;
     
     // Purge the box art cache
     [_boxArtCache removeAllObjects];
-    
+#if !TARGET_OS_TV
+    [self->_ambientCache removeAllObjects];
+#endif
+
     // Remove our lifetime observers to avoid triggering them
     // while streaming
     [[NSNotificationCenter defaultCenter] removeObserver:self];
@@ -1805,6 +1885,15 @@ static NSMutableSet* hostList;
             [_boxArtCache setObject:image forKey:app];
         }
     }
+
+#if !TARGET_OS_TV
+    if ([_ambientCache objectForKey:app] == nil) {
+        UIColor* ambient = [MoonlightTheme ambientColorForImage:[_boxArtCache objectForKey:app]];
+        if (ambient != nil) {
+            [_ambientCache setObject:ambient forKey:app];
+        }
+    }
+#endif
 }
 
 - (void) updateAppsForHost:(TemporaryHost*)host {
@@ -2005,6 +2094,9 @@ static NSMutableSet* hostList;
     
     // Purge the box art cache on low memory
     [_boxArtCache removeAllObjects];
+#if !TARGET_OS_TV
+    [self->_ambientCache removeAllObjects];
+#endif
 }
 
 - (void)touchesBegan:(NSSet *)touches withEvent:(UIEvent *)event {
