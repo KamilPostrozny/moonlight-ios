@@ -22,7 +22,6 @@
 #import "ServerInfoResponse.h"
 #import "StreamFrameViewController.h"
 #import "LoadingFrameViewController.h"
-#import "ComputerScrollView.h"
 #import "TemporaryApp.h"
 #import "IdManager.h"
 #import "ConnectionHelper.h"
@@ -37,6 +36,83 @@
 
 #include <Limelight.h>
 
+#if !TARGET_OS_TV
+
+typedef NS_ENUM(NSInteger, MoonlightSection) {
+    MoonlightSectionHosts,
+    MoonlightSectionContinue,
+    MoonlightSectionGames,
+};
+
+// Hosts a single UIComputerView/UIAppView pinned to the cell's bounds. Those
+// classes own their own drawing and callbacks; the cell only supplies a frame.
+@interface MoonlightTileCell : UICollectionViewCell
+- (void) setTileView:(UIView*)tile;
+@end
+
+@implementation MoonlightTileCell
+
+- (void) setTileView:(UIView*)tile {
+    [self clearTile];
+    tile.frame = self.contentView.bounds;
+    tile.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    [self.contentView addSubview:tile];
+}
+
+- (void) clearTile {
+    for (UIView* subview in [self.contentView.subviews copy]) {
+        [subview removeFromSuperview];
+    }
+}
+
+- (void) prepareForReuse {
+    [super prepareForReuse];
+    [self clearTile];
+}
+
+@end
+
+// Section header: a title plus an optional trailing button that shows a menu.
+@interface MoonlightHeaderView : UICollectionReusableView
+@property (nonatomic, readonly) UILabel* titleLabel;
+@property (nonatomic, readonly) UIButton* accessoryButton;
+@end
+
+@implementation MoonlightHeaderView
+
+- (instancetype) initWithFrame:(CGRect)frame {
+    self = [super initWithFrame:frame];
+
+    _titleLabel = [[UILabel alloc] init];
+    _titleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleTitle3];
+    _titleLabel.adjustsFontForContentSizeCategory = YES;
+    _titleLabel.textColor = [UIColor labelColor];
+
+    _accessoryButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    _accessoryButton.tintColor = [MoonlightTheme accentColor];
+    [_accessoryButton setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+
+    UIStackView* row = [[UIStackView alloc] initWithArrangedSubviews:@[_titleLabel, _accessoryButton]];
+    row.axis = UILayoutConstraintAxisHorizontal;
+    row.alignment = UIStackViewAlignmentCenter;
+    row.spacing = 8;
+    row.translatesAutoresizingMaskIntoConstraints = NO;
+    [self addSubview:row];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [row.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:20],
+        [row.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-20],
+        [row.topAnchor constraintEqualToAnchor:self.topAnchor constant:8],
+        [row.bottomAnchor constraintEqualToAnchor:self.bottomAnchor constant:-8],
+    ]];
+
+    return self;
+}
+
+@end
+
+#endif
+
 @implementation MainFrameViewController {
     NSOperationQueue* _opQueue;
     TemporaryHost* _selectedHost;
@@ -48,7 +124,8 @@
     StreamConfiguration* _streamConfig;
     UIAlertController* _pairAlert;
     LoadingFrameViewController* _loadingFrame;
-    UIScrollView* hostScrollView;
+    NSArray<NSNumber*>* _sections;
+    NSArray<TemporaryHost*>* _sortedHostList;
     NSArray* _sortedAppList;
     NSCache* _boxArtCache;
     bool _background;
@@ -298,8 +375,11 @@ static NSMutableSet* hostList;
     
     [self updateTitle];
 
+#if !TARGET_OS_TV
+    [self reloadEverything];
+#else
     [self.collectionView reloadData];
-    [self.view addSubview:hostScrollView];
+#endif
 }
 
 - (void) receivedAssetForApp:(TemporaryApp*)app {
@@ -847,6 +927,81 @@ static NSMutableSet* hostList;
     return nil;
 }
 
+#if !TARGET_OS_TV
+- (void) rebuildSections {
+    NSMutableArray<NSNumber*>* sections = [NSMutableArray arrayWithObject:@(MoonlightSectionHosts)];
+
+    if (_selectedHost != nil) {
+        if ([self findRunningApp:_selectedHost] != nil) {
+            [sections addObject:@(MoonlightSectionContinue)];
+        }
+        [sections addObject:@(MoonlightSectionGames)];
+    }
+
+    _sections = sections;
+}
+
+- (MoonlightSection) sectionAtIndex:(NSInteger)index {
+    return (MoonlightSection)[_sections[index] integerValue];
+}
+
+- (void) reloadEverything {
+    [self rebuildSections];
+    [self.collectionView reloadData];
+}
+
+- (NSCollectionLayoutBoundarySupplementaryItem*) makeSectionHeader {
+    NSCollectionLayoutSize* size =
+        [NSCollectionLayoutSize sizeWithWidthDimension:[NSCollectionLayoutDimension fractionalWidthDimension:1.0]
+                                       heightDimension:[NSCollectionLayoutDimension estimatedDimension:44]];
+    return [NSCollectionLayoutBoundarySupplementaryItem boundarySupplementaryItemWithLayoutSize:size
+                                                                                   elementKind:UICollectionElementKindSectionHeader
+                                                                                     alignment:NSRectAlignmentTop];
+}
+
+- (NSCollectionLayoutSection*) makeHostsSection {
+    NSCollectionLayoutSize* itemSize =
+        [NSCollectionLayoutSize sizeWithWidthDimension:[NSCollectionLayoutDimension absoluteDimension:240]
+                                       heightDimension:[NSCollectionLayoutDimension absoluteDimension:88]];
+
+    NSCollectionLayoutItem* item = [NSCollectionLayoutItem itemWithLayoutSize:itemSize];
+    NSCollectionLayoutGroup* group = [NSCollectionLayoutGroup horizontalGroupWithLayoutSize:itemSize
+                                                                                  subitems:@[item]];
+
+    NSCollectionLayoutSection* section = [NSCollectionLayoutSection sectionWithGroup:group];
+    section.orthogonalScrollingBehavior = UICollectionLayoutSectionOrthogonalScrollingBehaviorContinuousGroupLeadingBoundary;
+    section.interGroupSpacing = 12;
+    section.contentInsets = NSDirectionalEdgeInsetsMake(0, 20, 0, 20);
+    section.boundarySupplementaryItems = @[[self makeSectionHeader]];
+    return section;
+}
+
+- (UICollectionViewLayout*) makeLayout {
+    __weak MainFrameViewController* weakSelf = self;
+
+    UICollectionViewCompositionalLayoutConfiguration* config =
+        [[UICollectionViewCompositionalLayoutConfiguration alloc] init];
+    config.interSectionSpacing = 28;
+
+    return [[UICollectionViewCompositionalLayout alloc]
+            initWithSectionProvider:^NSCollectionLayoutSection*(NSInteger index, id<NSCollectionLayoutEnvironment> env) {
+        MainFrameViewController* self = weakSelf;
+        if (self == nil || index >= self->_sections.count) {
+            return nil;
+        }
+
+        switch ([self sectionAtIndex:index]) {
+            case MoonlightSectionHosts:
+                return [self makeHostsSection];
+            case MoonlightSectionContinue:
+            case MoonlightSectionGames:
+                // Added in later commits; until then these sections are empty.
+                return [self makeHostsSection];
+        }
+    } configuration:config];
+}
+#endif
+
 #if TARGET_OS_TV
 - (void)collectionView:(UICollectionView *)collectionView didSelectItemAtIndexPath:(NSIndexPath *)indexPath {
     [self appClicked:_sortedAppList[indexPath.row] view:nil];
@@ -869,22 +1024,6 @@ static NSMutableSet* hostList;
     [_loadingFrame dismissLoadingFrame:completion];
 }
 
-- (void)adjustScrollViewForSafeArea:(UIScrollView*)view {
-    if (@available(iOS 11.0, *)) {
-        if (self.view.safeAreaInsets.left >= 20 || self.view.safeAreaInsets.right >= 20) {
-            view.contentInset = UIEdgeInsetsMake(0, 20, 0, 20);
-        }
-    }
-}
-
-// Adjust the subviews for the safe area on the iPhone X.
-- (void)viewSafeAreaInsetsDidChange {
-    [super viewSafeAreaInsetsDidChange];
-    
-    [self adjustScrollViewForSafeArea:self.collectionView];
-    [self adjustScrollViewForSafeArea:self->hostScrollView];
-}
-
 - (void)viewDidLoad
 {
     [super viewDidLoad];
@@ -895,6 +1034,19 @@ static NSMutableSet* hostList;
                                          style:UIBarButtonItemStylePlain
                                         target:self
                                         action:@selector(showSettings)];
+
+    // Must run before the layout is installed: setCollectionViewLayout: can
+    // query the data source, which indexes into _sections.
+    [self rebuildSections];
+
+    self.collectionView.backgroundColor = [UIColor systemBackgroundColor];
+    self.collectionView.alwaysBounceVertical = YES;
+    [self.collectionView registerClass:[MoonlightTileCell class]
+            forCellWithReuseIdentifier:@"tile"];
+    [self.collectionView registerClass:[MoonlightHeaderView class]
+            forSupplementaryViewOfKind:UICollectionElementKindSectionHeader
+                   withReuseIdentifier:@"header"];
+    [self.collectionView setCollectionViewLayout:[self makeLayout] animated:NO];
 #else
     // The settings button will direct the user into the Settings app on tvOS
     [_settingsButton setTarget:self];
@@ -927,12 +1079,7 @@ static NSMutableSet* hostList;
     }
     
     _boxArtCache = [[NSCache alloc] init];
-        
-    hostScrollView = [[ComputerScrollView alloc] init];
-    hostScrollView.frame = CGRectMake(0, self.navigationController.navigationBar.frame.origin.y + self.navigationController.navigationBar.frame.size.height, self.view.frame.size.width, self.view.frame.size.height / 2);
-    [hostScrollView setShowsHorizontalScrollIndicator:NO];
-    hostScrollView.delaysContentTouches = NO;
-    
+
     self.collectionView.delaysContentTouches = NO;
     self.collectionView.allowsMultipleSelection = NO;
 #if !TARGET_OS_TV
@@ -952,7 +1099,9 @@ static NSMutableSet* hostList;
     }
     else {
         [self updateTitle];
-        [self.view addSubview:hostScrollView];
+#if !TARGET_OS_TV
+        [self reloadEverything];
+#endif
     }
 }
 
@@ -1263,21 +1412,14 @@ static NSMutableSet* hostList;
 #endif
 }
 
+#if !TARGET_OS_TV
 - (void)updateHosts {
     Log(LOG_I, @"Updating hosts...");
-    [[hostScrollView subviews] makeObjectsPerformSelector:@selector(removeFromSuperview)];
-    UIComputerView* addComp = [[UIComputerView alloc] initForAddWithCallback:self];
-    UIComputerView* compView;
-    float prevEdge = -1;
+
     @synchronized (hostList) {
-        // Sort the host list in alphabetical order
-        NSArray* sortedHostList = [[hostList allObjects] sortedArrayUsingSelector:@selector(compareName:)];
-        for (TemporaryHost* comp in sortedHostList) {
-            compView = [[UIComputerView alloc] initWithComputer:comp andCallback:self];
-            compView.center = CGPointMake([self getCompViewX:compView addComp:addComp prevEdge:prevEdge], hostScrollView.frame.size.height / 2);
-            prevEdge = compView.frame.origin.x + compView.frame.size.width;
-            [hostScrollView addSubview:compView];
-            
+        _sortedHostList = [[hostList allObjects] sortedArrayUsingSelector:@selector(compareName:)];
+
+        for (TemporaryHost* comp in _sortedHostList) {
             // Start jobs to decode the box art in advance
             for (TemporaryApp* app in comp.appList) {
                 dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{
@@ -1286,35 +1428,37 @@ static NSMutableSet* hostList;
             }
         }
     }
-    
+
+    [self updateHostShortcuts];
+    [self updateTitle];
+    [self reloadEverything];
+}
+#else
+- (void)updateHosts {
+    Log(LOG_I, @"Updating hosts...");
+
+    @synchronized (hostList) {
+        // Sort the host list in alphabetical order
+        NSArray* sortedHostList = [[hostList allObjects] sortedArrayUsingSelector:@selector(compareName:)];
+        for (TemporaryHost* comp in sortedHostList) {
+            // Start jobs to decode the box art in advance
+            for (TemporaryApp* app in comp.appList) {
+                dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{
+                    [self updateBoxArtCacheForApp:app];
+                });
+            }
+        }
+    }
+
     // Create or delete host shortcuts as needed
     [self updateHostShortcuts];
-    
+
     // Update the title in case we now have a PC
     [self updateTitle];
-    
-    prevEdge = [self getCompViewX:addComp addComp:addComp prevEdge:prevEdge];
-    addComp.center = CGPointMake(prevEdge, hostScrollView.frame.size.height / 2);
-    
-    [hostScrollView addSubview:addComp];
-    [hostScrollView setContentSize:CGSizeMake(prevEdge + addComp.frame.size.width, hostScrollView.frame.size.height)];
-}
 
-- (float) getCompViewX:(UIComputerView*)comp addComp:(UIComputerView*)addComp prevEdge:(float)prevEdge {
-    float padding;
-    
-#if TARGET_OS_TV
-    padding = 100;
-#else
-    padding = addComp.frame.size.width / 2;
-#endif
-    
-    if (prevEdge == -1) {
-        return hostScrollView.frame.origin.x + comp.frame.size.width / 2 + padding;
-    } else {
-        return prevEdge + comp.frame.size.width / 2 + padding;
-    }
+    [self.collectionView reloadData];
 }
+#endif
 
 // This function forces immediate decoding of the UIImage, rather
 // than the default lazy decoding that results in janky scrolling.
@@ -1381,26 +1525,30 @@ static NSMutableSet* hostList;
         }
         _sortedAppList = visibleAppList;
     }
-    
-    [hostScrollView removeFromSuperview];
+
+#if !TARGET_OS_TV
+    [self reloadEverything];
+#else
     [self.collectionView reloadData];
+#endif
 }
 
+#if TARGET_OS_TV
 - (UICollectionViewCell *)collectionView:(UICollectionView *)collectionView cellForItemAtIndexPath:(NSIndexPath *)indexPath {
     UICollectionViewCell* cell = [collectionView dequeueReusableCellWithReuseIdentifier:@"AppCell" forIndexPath:indexPath];
-    
+
     TemporaryApp* app = _sortedAppList[indexPath.row];
     UIAppView* appView = [[UIAppView alloc] initWithApp:app cache:_boxArtCache andCallback:self];
-    
+
     if (appView.bounds.size.width > 10.0) {
         CGFloat scale = cell.bounds.size.width / appView.bounds.size.width;
         [appView setCenter:CGPointMake(appView.bounds.size.width / 2 * scale, appView.bounds.size.height / 2 * scale)];
         appView.transform = CGAffineTransformMakeScale(scale, scale);
     }
-    
+
     [cell.subviews.firstObject removeFromSuperview]; // Remove a view that was previously added
     [cell addSubview:appView];
-    
+
     // Shadow opacity is controlled inside UIAppView based on whether the app
     // is hidden or not during the update cycle.
     UIBezierPath *shadowPath = [UIBezierPath bezierPathWithRect:cell.bounds];
@@ -1408,7 +1556,7 @@ static NSMutableSet* hostList;
     cell.layer.shadowColor = [UIColor blackColor].CGColor;
     cell.layer.shadowOffset = CGSizeMake(1.0f, 5.0f);
     cell.layer.shadowPath = shadowPath.CGPath;
-    
+
 #if !TARGET_OS_TV
     cell.layer.borderWidth = 1;
     cell.layer.borderColor = [[UIColor colorWithRed:0 green:0 blue:0 alpha:0.3f] CGColor];
@@ -1430,6 +1578,67 @@ static NSMutableSet* hostList;
         return 0;
     }
 }
+#else
+- (NSInteger) numberOfSectionsInCollectionView:(UICollectionView*)collectionView {
+    return _sections.count;
+}
+
+- (NSInteger) collectionView:(UICollectionView*)collectionView numberOfItemsInSection:(NSInteger)section {
+    switch ([self sectionAtIndex:section]) {
+        case MoonlightSectionHosts:
+            // Every host, plus the trailing "Add PC" tile.
+            return _sortedHostList.count + 1;
+        case MoonlightSectionContinue:
+            return 0;   // populated in a later commit
+        case MoonlightSectionGames:
+            return 0;   // populated in a later commit
+    }
+    return 0;
+}
+
+// ponytail: rebuilds the tile view on every dequeue instead of reconfiguring; add a -configureForHost: reuse path if a large host list ever scrolls badly.
+- (UICollectionViewCell*) collectionView:(UICollectionView*)collectionView cellForItemAtIndexPath:(NSIndexPath*)indexPath {
+    MoonlightTileCell* cell = [collectionView dequeueReusableCellWithReuseIdentifier:@"tile" forIndexPath:indexPath];
+
+    if ([self sectionAtIndex:indexPath.section] == MoonlightSectionHosts) {
+        if (indexPath.item < _sortedHostList.count) {
+            TemporaryHost* host = _sortedHostList[indexPath.item];
+            UIComputerView* hostView = [[UIComputerView alloc] initWithComputer:host andCallback:self];
+            [hostView setHostSelected:(host == _selectedHost)];
+            [cell setTileView:hostView];
+        }
+        else {
+            [cell setTileView:[[UIComputerView alloc] initForAddWithCallback:self]];
+        }
+    }
+
+    return cell;
+}
+
+- (UICollectionReusableView*) collectionView:(UICollectionView*)collectionView
+           viewForSupplementaryElementOfKind:(NSString*)kind
+                                 atIndexPath:(NSIndexPath*)indexPath {
+    MoonlightHeaderView* header = [collectionView dequeueReusableSupplementaryViewOfKind:kind
+                                                                     withReuseIdentifier:@"header"
+                                                                            forIndexPath:indexPath];
+    header.accessoryButton.hidden = YES;
+    header.accessoryButton.menu = nil;
+
+    switch ([self sectionAtIndex:indexPath.section]) {
+        case MoonlightSectionHosts:
+            header.titleLabel.text = @"PCs";
+            break;
+        case MoonlightSectionContinue:
+            header.titleLabel.text = @"Continue";
+            break;
+        case MoonlightSectionGames:
+            header.titleLabel.text = @"Games";
+            break;
+    }
+
+    return header;
+}
+#endif
 
 - (void)didReceiveMemoryWarning
 {
