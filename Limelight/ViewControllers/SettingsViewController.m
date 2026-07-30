@@ -622,7 +622,11 @@ BOOL isCustomResolution(CGSize res) {
     }
 
     defaultBitrate = round(resolutionFactor * frameRateFactor) * 1000;
-    _bitrate = MIN(defaultBitrate, 100000);
+    // Snap to a real slider notch now, not just at load time — otherwise an
+    // arbitrary capped value (e.g. 52000) gets persisted, and reloading it
+    // through getSliderValueForBitrate: (which rounds up to the next notch,
+    // 60000) makes the bitrate ratchet upward on every Settings reopen.
+    _bitrate = bitrateTable[[self getSliderValueForBitrate:MIN(defaultBitrate, 100000)]];
     _bitrateSlider.value = [self getSliderValueForBitrate:_bitrate];
 
     [self updateBitrateText];
