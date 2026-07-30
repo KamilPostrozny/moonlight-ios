@@ -167,9 +167,16 @@ typedef NS_ENUM(NSInteger, MoonlightSection) {
                                                            prominent:NO];
     [_quitButton addTarget:self action:@selector(quitTapped) forControlEvents:UIControlEventPrimaryActionTriggered];
 
+    // Keep the button titles from hyphenating ("Re-sume") when the row gets
+    // narrow in portrait; let the artwork give up space instead (see the
+    // width constraint's priority below).
+    [_resumeButton setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+    [_quitButton setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+
     UIStackView* buttons = [[UIStackView alloc] initWithArrangedSubviews:@[_resumeButton, _quitButton]];
     buttons.axis = UILayoutConstraintAxisHorizontal;
     buttons.spacing = 10;
+    buttons.distribution = UIStackViewDistributionFill;
 
     UIView* spacer = [[UIView alloc] init];
     [spacer setContentHuggingPriority:UILayoutPriorityDefaultLow forAxis:UILayoutConstraintAxisVertical];
@@ -183,6 +190,12 @@ typedef NS_ENUM(NSInteger, MoonlightSection) {
     [self.contentView addSubview:_artView];
     [self.contentView addSubview:textStack];
 
+    // Lower priority than the buttons' compression resistance above, so when
+    // the row is too narrow for both, the artwork shrinks instead of the
+    // button titles hyphenating.
+    NSLayoutConstraint* artWidthConstraint = [_artView.widthAnchor constraintEqualToAnchor:_artView.heightAnchor multiplier:3.0f / 4.0f];
+    artWidthConstraint.priority = UILayoutPriorityDefaultHigh;
+
     [NSLayoutConstraint activateConstraints:@[
         [_glass.topAnchor constraintEqualToAnchor:self.contentView.topAnchor],
         [_glass.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor],
@@ -192,7 +205,7 @@ typedef NS_ENUM(NSInteger, MoonlightSection) {
         [_artView.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:16],
         [_artView.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor constant:-16],
         [_artView.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:16],
-        [_artView.widthAnchor constraintEqualToAnchor:_artView.heightAnchor multiplier:3.0f / 4.0f],
+        artWidthConstraint,
 
         [textStack.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:16],
         [textStack.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor constant:-16],
@@ -1367,6 +1380,44 @@ static NSMutableSet* hostList;
 - (void)collectionView:(UICollectionView *)collectionView didSelectItemAtIndexPath:(NSIndexPath *)indexPath {
     [self appClicked:_sortedAppList[indexPath.row] view:nil];
 }
+#else
+// UIComputerView's own target/action is disabled on iOS (see
+// cellForItemAtIndexPath:'s hosts branch), so the collection view now owns
+// tap handling for the Hosts section. The Continue and Applications sections
+// aren't touched here — the hero cell's buttons and UIAppView handle
+// themselves.
+- (void)collectionView:(UICollectionView *)collectionView didSelectItemAtIndexPath:(NSIndexPath *)indexPath {
+    [collectionView deselectItemAtIndexPath:indexPath animated:YES];
+
+    if ([self sectionAtIndex:indexPath.section] != MoonlightSectionHosts) {
+        return;
+    }
+
+    if (indexPath.item >= _sortedHostList.count) {
+        [self addHostClicked];
+        return;
+    }
+
+    // Pass the cell (never nil) as the "view" — hostClicked:/hostLongClicked:
+    // treat a nil view as "programmatic", which changes their control flow,
+    // and popoverPresentationController.sourceView = nil throws on iPad.
+    UICollectionViewCell* cell = [collectionView cellForItemAtIndexPath:indexPath];
+    [self hostClicked:_sortedHostList[indexPath.item] view:cell];
+}
+
+- (UIContextMenuConfiguration *)collectionView:(UICollectionView *)collectionView
+    contextMenuConfigurationForItemAtIndexPath:(NSIndexPath *)indexPath
+                                          point:(CGPoint)point {
+    if ([self sectionAtIndex:indexPath.section] != MoonlightSectionHosts ||
+        indexPath.item >= _sortedHostList.count) {
+        // No context menu for the "Add PC" tile or any other section.
+        return nil;
+    }
+
+    UICollectionViewCell* cell = [collectionView cellForItemAtIndexPath:indexPath];
+    [self hostLongClicked:_sortedHostList[indexPath.item] view:cell];
+    return nil;
+}
 #endif
 
 - (void)prepareForSegue:(UIStoryboardSegue *)segue sender:(id)sender {
@@ -1462,6 +1513,7 @@ static NSMutableSet* hostList;
     _boxArtCache = [[NSCache alloc] init];
 
     self.collectionView.delaysContentTouches = NO;
+    self.collectionView.allowsSelection = YES;
     self.collectionView.allowsMultipleSelection = NO;
 #if !TARGET_OS_TV
     self.collectionView.multipleTouchEnabled = NO;
@@ -2052,15 +2104,23 @@ static NSMutableSet* hostList;
     MoonlightTileCell* cell = [collectionView dequeueReusableCellWithReuseIdentifier:@"tile" forIndexPath:indexPath];
 
     if ([self sectionAtIndex:indexPath.section] == MoonlightSectionHosts) {
+        UIComputerView* hostView;
         if (indexPath.item < _sortedHostList.count) {
             TemporaryHost* host = _sortedHostList[indexPath.item];
-            UIComputerView* hostView = [[UIComputerView alloc] initWithComputer:host andCallback:self];
+            hostView = [[UIComputerView alloc] initWithComputer:host andCallback:self];
             [hostView setHostSelected:(host == _selectedHost)];
-            [cell setTileView:hostView];
         }
         else {
-            [cell setTileView:[[UIComputerView alloc] initForAddWithCallback:self]];
+            hostView = [[UIComputerView alloc] initForAddWithCallback:self];
         }
+        // UIComputerView is a UIButton, and UIScrollView.touchesShouldCancelInContentView:
+        // returns NO for UIControl subviews by default, so a drag starting on
+        // a card never becomes a scroll in the hosts section's orthogonal
+        // (private, un-subclassable) scroll view. Make the collection view
+        // the interactive element instead — see collectionView:didSelectItemAtIndexPath:
+        // and collectionView:contextMenuConfigurationForItemAtIndexPath:point: below.
+        hostView.userInteractionEnabled = NO;
+        [cell setTileView:hostView];
     }
     else if ([self sectionAtIndex:indexPath.section] == MoonlightSectionGames) {
         TemporaryApp* app = _sortedAppList[indexPath.item];
