@@ -648,35 +648,21 @@ static NSMutableSet* hostList;
     return topController;
 }
 
-- (void)hostLongClicked:(TemporaryHost *)host view:(UIView *)view {
-    Log(LOG_D, @"Long clicked host: %@", host.name);
-    NSString* message;
-    
-    switch (host.state) {
-        case StateOffline:
-            message = @"Offline";
-            break;
-            
-        case StateOnline:
-            if (host.pairState == PairStatePaired) {
-                message = @"Online - Paired";
-            }
-            else {
-                message = @"Online - Not Paired";
-            }
-            break;
-        
-        case StateUnknown:
-            message = @"Connecting";
-            break;
-            
-        default:
-            break;
-    }
-    
-    UIAlertController* longClickAlert = [UIAlertController alertControllerWithTitle:host.name message:message preferredStyle:UIAlertControllerStyleActionSheet];
+// The host's actions, defined once and shared by both presentations:
+// hostLongClicked:view: (action sheet, used for offline hosts and as the
+// fallback UI) and collectionView:contextMenuConfigurationForItemAtIndexPath:point:
+// (the real context menu). Keeping a single definition means the two can't
+// drift out of sync with each other.
+- (NSArray<UIAction*>*) hostActionsForHost:(TemporaryHost*)host {
+    __weak typeof(self) weakSelf = self;
+    NSMutableArray<UIAction*>* actions = [NSMutableArray array];
+
     if (host.state != StateOnline) {
-        [longClickAlert addAction:[UIAlertAction actionWithTitle:@"Wake PC" style:UIAlertActionStyleDefault handler:^(UIAlertAction* action){
+        [actions addObject:[UIAction actionWithTitle:@"Wake PC" image:nil identifier:nil handler:^(UIAction* action){
+            typeof(self) strongSelf = weakSelf;
+            if (strongSelf == nil) {
+                return;
+            }
             UIAlertController* wolAlert = [UIAlertController alertControllerWithTitle:@"Wake-On-LAN" message:@"" preferredStyle:UIAlertControllerStyleAlert];
             [wolAlert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
             if (host.mac == nil || [host.mac isEqualToString:@"00:00:00:00:00:00"]) {
@@ -687,47 +673,91 @@ static NSMutableSet* hostList;
                 });
                 wolAlert.message = @"Successfully sent wake-up request. It may take a few moments for the PC to wake. If it never wakes up, ensure it's properly configured for Wake-on-LAN.";
             }
-            [[self activeViewController] presentViewController:wolAlert animated:YES completion:nil];
+            [[strongSelf activeViewController] presentViewController:wolAlert animated:YES completion:nil];
         }]];
     }
-    else if (host.pairState == PairStatePaired) {
-        [longClickAlert addAction:[UIAlertAction actionWithTitle:@"View All Apps" style:UIAlertActionStyleDefault handler:^(UIAlertAction* action){
-            // hostClicked: clears the per-PC filters when the host changes, so
-            // the flag has to be set after it, not before, or the reset wins.
-            [self hostClicked:host view:view];
-            self->_showHiddenApps = YES;
-            [self updateAppsForHost:host];
-        }]];
-        
 #if !TARGET_OS_TV
-        if (host.isNvidiaServerSoftware) {
-            [longClickAlert addAction:[UIAlertAction actionWithTitle:@"NVIDIA GameStream End-of-Service" style:UIAlertActionStyleDefault handler:^(UIAlertAction* action){
-                [Utils launchUrl:@"https://github.com/moonlight-stream/moonlight-docs/wiki/NVIDIA-GameStream-End-Of-Service-Announcement-FAQ"];
-            }]];
-        }
-#endif
-    }
-    [longClickAlert addAction:[UIAlertAction actionWithTitle:@"Test Network" style:UIAlertActionStyleDefault handler:^(UIAlertAction* action) {
-        [self testNetwork];
-    }]];
-#if !TARGET_OS_TV
-    if (host.state != StateOnline) {
-        [longClickAlert addAction:[UIAlertAction actionWithTitle:@"NVIDIA GameStream End-of-Service" style:UIAlertActionStyleDefault handler:^(UIAlertAction* action){
+    else if (host.pairState == PairStatePaired && host.isNvidiaServerSoftware) {
+        [actions addObject:[UIAction actionWithTitle:@"NVIDIA GameStream End-of-Service" image:nil identifier:nil handler:^(UIAction* action){
             [Utils launchUrl:@"https://github.com/moonlight-stream/moonlight-docs/wiki/NVIDIA-GameStream-End-Of-Service-Announcement-FAQ"];
         }]];
-        [longClickAlert addAction:[UIAlertAction actionWithTitle:@"Connection Help" style:UIAlertActionStyleDefault handler:^(UIAlertAction* action){
+    }
+#endif
+
+    [actions addObject:[UIAction actionWithTitle:@"Test Network" image:[UIImage systemImageNamed:@"network"] identifier:nil handler:^(UIAction* action) {
+        typeof(self) strongSelf = weakSelf;
+        if (strongSelf == nil) {
+            return;
+        }
+        [strongSelf testNetwork];
+    }]];
+
+#if !TARGET_OS_TV
+    if (host.state != StateOnline) {
+        [actions addObject:[UIAction actionWithTitle:@"NVIDIA GameStream End-of-Service" image:nil identifier:nil handler:^(UIAction* action){
+            [Utils launchUrl:@"https://github.com/moonlight-stream/moonlight-docs/wiki/NVIDIA-GameStream-End-Of-Service-Announcement-FAQ"];
+        }]];
+        [actions addObject:[UIAction actionWithTitle:@"Connection Help" image:[UIImage systemImageNamed:@"questionmark.circle"] identifier:nil handler:^(UIAction* action){
             [Utils launchUrl:@"https://github.com/moonlight-stream/moonlight-docs/wiki/Troubleshooting"];
         }]];
     }
 #endif
-    [longClickAlert addAction:[UIAlertAction actionWithTitle:@"Remove Host" style:UIAlertActionStyleDestructive handler:^(UIAlertAction* action) {
-        [self removeHost:host];
-    }]];
+
+    UIAction* remove = [UIAction actionWithTitle:@"Remove PC" image:[UIImage systemImageNamed:@"trash"] identifier:nil handler:^(UIAction* action) {
+        typeof(self) strongSelf = weakSelf;
+        if (strongSelf == nil) {
+            return;
+        }
+        [strongSelf removeHost:host];
+    }];
+    remove.attributes = UIMenuElementAttributesDestructive;
+    [actions addObject:remove];
+
+    return actions;
+}
+
+- (void)hostLongClicked:(TemporaryHost *)host view:(UIView *)view {
+    Log(LOG_D, @"Long clicked host: %@", host.name);
+    NSString* message;
+
+    switch (host.state) {
+        case StateOffline:
+            message = @"Offline";
+            break;
+
+        case StateOnline:
+            if (host.pairState == PairStatePaired) {
+                message = @"Online - Paired";
+            }
+            else {
+                message = @"Online - Not Paired";
+            }
+            break;
+
+        case StateUnknown:
+            message = @"Connecting";
+            break;
+
+        default:
+            break;
+    }
+
+    UIAlertController* longClickAlert = [UIAlertController alertControllerWithTitle:host.name message:message preferredStyle:UIAlertControllerStyleActionSheet];
+
+    // Map the shared action list onto UIAlertActions rather than keeping a
+    // second, independent definition of the host's actions.
+    for (UIAction* action in [self hostActionsForHost:host]) {
+        UIAlertActionStyle style = (action.attributes & UIMenuElementAttributesDestructive) ? UIAlertActionStyleDestructive : UIAlertActionStyleDefault;
+        [longClickAlert addAction:[UIAlertAction actionWithTitle:action.title style:style handler:^(UIAlertAction* alertAction) {
+            action.handler(action);
+        }]];
+    }
+
     [longClickAlert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-    
+
     // these two lines are required for iPad support of UIAlertSheet
     longClickAlert.popoverPresentationController.sourceView = view;
-    
+
     longClickAlert.popoverPresentationController.sourceRect = CGRectMake(view.bounds.size.width / 2.0, view.bounds.size.height / 2.0, 1.0, 1.0); // center of the view
     [[self activeViewController] presentViewController:longClickAlert animated:YES completion:nil];
 }
@@ -776,6 +806,9 @@ static NSMutableSet* hostList;
 }
 
 #if !TARGET_OS_TV
+// App-scoped actions only. PC-scoped actions (Test Network, Connection Help,
+// Remove PC) live in the host long-press menu instead — see
+// hostActionsForHost: — since they act on the PC, not the app list.
 - (UIMenu*) gamesMenu {
     __weak typeof(self) weakSelf = self;
 
@@ -784,52 +817,19 @@ static NSMutableSet* hostList;
         return nil;
     }
 
-    NSMutableArray<UIAction*>* actions = [NSMutableArray array];
-
-    [actions addObject:[UIAction actionWithTitle:(_showHiddenApps ? @"Hide Hidden Apps" : @"Show Hidden Apps")
-                                           image:[UIImage systemImageNamed:@"eye"]
-                                      identifier:nil
-                                         handler:^(UIAction* action) {
+    UIAction* toggleHidden = [UIAction actionWithTitle:(_showHiddenApps ? @"Hide Hidden Apps" : @"Show Hidden Apps")
+                                                  image:[UIImage systemImageNamed:@"eye"]
+                                             identifier:nil
+                                                handler:^(UIAction* action) {
         typeof(self) strongSelf = weakSelf;
         if (strongSelf == nil) {
             return;
         }
         strongSelf->_showHiddenApps = !strongSelf->_showHiddenApps;
         [strongSelf updateAppsForHost:host];
-    }]];
-
-    [actions addObject:[UIAction actionWithTitle:@"Test Network"
-                                           image:[UIImage systemImageNamed:@"network"]
-                                      identifier:nil
-                                         handler:^(UIAction* action) {
-        typeof(self) strongSelf = weakSelf;
-        if (strongSelf == nil) {
-            return;
-        }
-        [strongSelf testNetwork];
-    }]];
-
-    [actions addObject:[UIAction actionWithTitle:@"Connection Help"
-                                           image:[UIImage systemImageNamed:@"questionmark.circle"]
-                                      identifier:nil
-                                         handler:^(UIAction* action) {
-        [Utils launchUrl:@"https://github.com/moonlight-stream/moonlight-docs/wiki/Troubleshooting"];
-    }]];
-
-    UIAction* remove = [UIAction actionWithTitle:@"Remove PC"
-                                           image:[UIImage systemImageNamed:@"trash"]
-                                      identifier:nil
-                                         handler:^(UIAction* action) {
-        typeof(self) strongSelf = weakSelf;
-        if (strongSelf == nil) {
-            return;
-        }
-        [strongSelf removeHost:host];
     }];
-    remove.attributes = UIMenuElementAttributesDestructive;
-    [actions addObject:remove];
 
-    return [UIMenu menuWithTitle:host.name children:actions];
+    return [UIMenu menuWithTitle:host.name children:@[toggleHidden]];
 }
 #endif
 
@@ -1259,8 +1259,12 @@ static NSMutableSet* hostList;
 }
 
 - (NSCollectionLayoutSection*) makeHostsSection {
+    // Estimated rather than absolute so a card grows to fit its labels
+    // (e.g. the "Add PC" card's "Enter an IP address" subtitle in landscape).
+    // UIComputerView's content row is pinned to its own leading/trailing
+    // anchors with no fixed width, so its natural width follows the labels.
     NSCollectionLayoutSize* itemSize =
-        [NSCollectionLayoutSize sizeWithWidthDimension:[NSCollectionLayoutDimension absoluteDimension:240]
+        [NSCollectionLayoutSize sizeWithWidthDimension:[NSCollectionLayoutDimension estimatedDimension:240]
                                        heightDimension:[NSCollectionLayoutDimension absoluteDimension:88]];
 
     NSCollectionLayoutItem* item = [NSCollectionLayoutItem itemWithLayoutSize:itemSize];
@@ -1414,9 +1418,19 @@ static NSMutableSet* hostList;
         return nil;
     }
 
-    UICollectionViewCell* cell = [collectionView cellForItemAtIndexPath:indexPath];
-    [self hostLongClicked:_sortedHostList[indexPath.item] view:cell];
-    return nil;
+    // Return a real context menu instead of presenting an action sheet and
+    // returning nil: presenting-then-returning-nil leaves UIKit's cell-lift
+    // animation and the action sheet's slide-up fighting each other, which is
+    // what made the menu "jump" as it appeared.
+    TemporaryHost* host = _sortedHostList[indexPath.item];
+    __weak typeof(self) weakSelf = self;
+    return [UIContextMenuConfiguration configurationWithIdentifier:nil previewProvider:nil actionProvider:^UIMenu*(NSArray<UIMenuElement*>* suggested) {
+        typeof(self) strongSelf = weakSelf;
+        if (strongSelf == nil) {
+            return nil;
+        }
+        return [UIMenu menuWithTitle:host.name children:[strongSelf hostActionsForHost:host]];
+    }];
 }
 #endif
 
@@ -2200,6 +2214,7 @@ static NSMutableSet* hostList;
     SettingsViewController* settings = [self.storyboard instantiateViewControllerWithIdentifier:@"settings"];
     UINavigationController* nav = [[UINavigationController alloc] initWithRootViewController:settings];
     nav.modalPresentationStyle = UIModalPresentationPageSheet;
+    nav.view.tintColor = [MoonlightTheme accentColor];
 
     UISheetPresentationController* sheet = nav.sheetPresentationController;
     sheet.detents = @[[UISheetPresentationControllerDetent largeDetent]];
