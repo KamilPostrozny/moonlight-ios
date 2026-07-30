@@ -989,10 +989,19 @@ static NSMutableSet* hostList;
     NSCollectionLayoutItem* item = [NSCollectionLayoutItem itemWithLayoutSize:itemSize];
     item.contentInsets = NSDirectionalEdgeInsetsMake(0, 6, 0, 6);
 
+    // Room for two lines of the tile's name label plus the 6pt gap that
+    // buildLayout puts between the poster and the label. Derived from the live
+    // font rather than hardcoded, because an absolute layout dimension does not
+    // otherwise track Dynamic Type, and at accessibility sizes a fixed constant
+    // lets the label overlap the row below. Keep the 6 here in step with the
+    // 6pt gap constant in UIAppView's buildLayout.
+    CGFloat lineHeight = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline].lineHeight;
+    CGFloat labelAllowance = ceil(lineHeight * 2) + 6 + 4;
+
     // Box art is 3:4, plus room for two lines of name beneath it.
     NSCollectionLayoutSize* groupSize =
         [NSCollectionLayoutSize sizeWithWidthDimension:[NSCollectionLayoutDimension fractionalWidthDimension:1.0]
-                                       heightDimension:[NSCollectionLayoutDimension absoluteDimension:columnWidth * 4.0 / 3.0 + 44]];
+                                       heightDimension:[NSCollectionLayoutDimension absoluteDimension:columnWidth * 4.0 / 3.0 + labelAllowance]];
     NSCollectionLayoutGroup* group = [NSCollectionLayoutGroup horizontalGroupWithLayoutSize:groupSize
                                                                                     subitem:item
                                                                                       count:columns];
