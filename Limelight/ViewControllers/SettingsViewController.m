@@ -614,9 +614,14 @@ BOOL isCustomResolution(CGSize res) {
         height = MAX(height, 256);
 
         resolutionTable[RESOLUTION_TABLE_CUSTOM_INDEX] = CGSizeMake(width, height);
-        [self updateBitrate];
+        // _resolutionIndex must point at the custom entry before updateBitrate reads
+        // getChosenStreamWidth/Height, or the default bitrate is computed against the
+        // previously-selected resolution instead of the one just entered. (In the old
+        // segmented-control code this was implicit: the control's selection was already
+        // on the custom segment by the time this handler ran.)
         self->_resolutionIndex = RESOLUTION_TABLE_CUSTOM_INDEX;
         self->_lastSelectedResolutionIndex = RESOLUTION_TABLE_CUSTOM_INDEX;
+        [self updateBitrate];
         [self settingsChanged];
 
         UIAlertController *alertController = [UIAlertController alertControllerWithTitle:@"Custom Resolution Selected" message: @"Custom resolutions are not officially supported by GeForce Experience, so it will not set your host display resolution. You will need to set it manually while in game.\n\nResolutions that are not supported by your client or host PC may cause streaming errors." preferredStyle:UIAlertControllerStyleAlert];
