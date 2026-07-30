@@ -223,12 +223,16 @@ static UIImage* noImage;
         noAppImage = YES;
     }
 
+    BOOL running = [_app.id isEqualToString:_app.host.currentGame];
+
     _appLabel.text = noAppImage ? _app.name : nil;
-    _appLabel.hidden = !noAppImage;
+    // Hide the in-art fallback label while the play overlay is shown so they
+    // don't draw on top of each other ("D▶p") — the tile's _nameLabel below
+    // the art already shows the name regardless.
+    _appLabel.hidden = !noAppImage || running;
 
     _nameLabel.text = _app.name;
 
-    BOOL running = [_app.id isEqualToString:_app.host.currentGame];
     _appOverlay.image = running ? [UIImage systemImageNamed:@"play.circle.fill"] : nil;
     _appOverlay.hidden = !running;
 
