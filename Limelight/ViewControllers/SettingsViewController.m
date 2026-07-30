@@ -18,8 +18,6 @@
     NSInteger _lastSelectedResolutionIndex;
 }
 
-@dynamic overrideUserInterfaceStyle;
-
 static NSString* bitrateFormat = @"Bitrate: %.1f Mbps";
 static const int bitrateTable[] = {
     500,
@@ -67,51 +65,6 @@ CGSize resolutionTable[RESOLUTION_TABLE_SIZE];
     return i - 1;
 }
 
-// This view is rooted at a ScrollView. To make it scrollable,
-// we'll update content size here.
--(void)viewDidLayoutSubviews {
-    CGFloat highestViewY = 0;
-    
-    // Enumerate the scroll view's subviews looking for the
-    // highest view Y value to set our scroll view's content
-    // size.
-    for (UIView* view in self.scrollView.subviews) {
-        // UIScrollViews have 2 default child views
-        // which represent the horizontal and vertical scrolling
-        // indicators. Ignore any views we don't recognize.
-        if (![view isKindOfClass:[UILabel class]] &&
-            ![view isKindOfClass:[UISegmentedControl class]] &&
-            ![view isKindOfClass:[UISlider class]]) {
-            continue;
-        }
-        
-        CGFloat currentViewY = view.frame.origin.y + view.frame.size.height;
-        if (currentViewY > highestViewY) {
-            highestViewY = currentViewY;
-        }
-    }
-    
-    // Add a bit of padding so the view doesn't end right at the button of the display
-    self.scrollView.contentSize = CGSizeMake(self.scrollView.contentSize.width,
-                                             highestViewY + 20);
-}
-
-// Adjust the subviews for the safe area on the iPhone X.
-- (void)viewSafeAreaInsetsDidChange {
-    [super viewSafeAreaInsetsDidChange];
-    
-    if (@available(iOS 11.0, *)) {
-        for (UIView* view in self.view.subviews) {
-            // HACK: The official safe area is much too large for our purposes
-            // so we'll just use the presence of any safe area to indicate we should
-            // pad by 20.
-            if (self.view.safeAreaInsets.left >= 20 || self.view.safeAreaInsets.right >= 20) {
-                view.frame = CGRectMake(view.frame.origin.x + 20, view.frame.origin.y, view.frame.size.width, view.frame.size.height);
-            }
-        }
-    }
-}
-
 BOOL isCustomResolution(CGSize res) {
     if (res.width == 0 && res.height == 0) {
         return NO;
@@ -129,11 +82,6 @@ BOOL isCustomResolution(CGSize res) {
 - (void)viewDidLoad {
     [super viewDidLoad];
 
-    // Always run settings in dark mode because we want the light fonts
-    if (@available(iOS 13.0, tvOS 13.0, *)) {
-        self.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
-    }
-    
     DataManager* dataMan = [[DataManager alloc] init];
     TemporarySettings* currentSettings = [dataMan getSettings];
     
@@ -146,12 +94,7 @@ BOOL isCustomResolution(CGSize res) {
     CGFloat safeAreaWidth = (window.frame.size.width - window.safeAreaInsets.left - window.safeAreaInsets.right) * screenScale;
     CGFloat fullScreenWidth = window.frame.size.width * screenScale;
     CGFloat fullScreenHeight = window.frame.size.height * screenScale;
-    
-    self.resolutionDisplayView.layer.cornerRadius = 10;
-    self.resolutionDisplayView.clipsToBounds = YES;
-    UITapGestureRecognizer *resolutionDisplayViewTap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(resolutionDisplayViewTapped:)];
-    [self.resolutionDisplayView addGestureRecognizer:resolutionDisplayViewTap];
-    
+
     resolutionTable[0] = CGSizeMake(640, 360);
     resolutionTable[1] = CGSizeMake(1280, 720);
     resolutionTable[2] = CGSizeMake(1920, 1080);
@@ -262,7 +205,17 @@ BOOL isCustomResolution(CGSize res) {
     [self.bitrateSlider setValue:[self getSliderValueForBitrate:_bitrate] animated:YES];
     [self.bitrateSlider addTarget:self action:@selector(bitrateSliderMoved) forControlEvents:UIControlEventValueChanged];
     [self updateBitrateText];
-    [self updateResolutionDisplayViewText];
+
+    self.title = @"Settings";
+    self.navigationItem.rightBarButtonItem =
+        [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemDone
+                                                      target:self
+                                                      action:@selector(doneTapped)];
+}
+
+- (void) doneTapped {
+    [self saveSettings];
+    [self dismissViewControllerAnimated:YES completion:nil];
 }
 
 - (void) touchModeChanged {
@@ -339,7 +292,6 @@ BOOL isCustomResolution(CGSize res) {
     }
     else {
         [self updateBitrate];
-        [self updateResolutionDisplayViewText];
         _lastSelectedResolutionIndex = [self.resolutionSelector selectedSegmentIndex];
     }
 }
@@ -407,7 +359,6 @@ BOOL isCustomResolution(CGSize res) {
 
         resolutionTable[RESOLUTION_TABLE_CUSTOM_INDEX] = CGSizeMake(width, height);
         [self updateBitrate];
-        [self updateResolutionDisplayViewText];
         self->_lastSelectedResolutionIndex = [self.resolutionSelector selectedSegmentIndex];
         
         UIAlertController *alertController = [UIAlertController alertControllerWithTitle:@"Custom Resolution Selected" message: @"Custom resolutions are not officially supported by GeForce Experience, so it will not set your host display resolution. You will need to set it manually while in game.\n\nResolutions that are not supported by your client or host PC may cause streaming errors." preferredStyle:UIAlertControllerStyleAlert];
@@ -428,32 +379,6 @@ BOOL isCustomResolution(CGSize res) {
     if ([[UIApplication sharedApplication] canOpenURL:url]) {
         [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:nil];
     }
-}
-
-- (void) updateResolutionDisplayViewText {
-    NSInteger width = [self getChosenStreamWidth];
-    NSInteger height = [self getChosenStreamHeight];
-    CGFloat viewFrameWidth = self.resolutionDisplayView.frame.size.width;
-    CGFloat viewFrameHeight = self.resolutionDisplayView.frame.size.height;
-    CGFloat padding = 10;
-    CGFloat fontSize = [UIFont smallSystemFontSize];
-    
-    for (UIView *subview in self.resolutionDisplayView.subviews) {
-        [subview removeFromSuperview];
-    }
-    UILabel *label1 = [[UILabel alloc] init];
-    label1.text = @"Set PC/Game resolution: ";
-    label1.font = [UIFont systemFontOfSize:fontSize];
-    [label1 sizeToFit];
-    label1.frame = CGRectMake(padding, (viewFrameHeight - label1.frame.size.height) / 2, label1.frame.size.width, label1.frame.size.height);
-
-    UILabel *label2 = [[UILabel alloc] init];
-    label2.text = [NSString stringWithFormat:@"%ld x %ld", (long)width, (long)height];
-    [label2 sizeToFit];
-    label2.frame = CGRectMake(viewFrameWidth - label2.frame.size.width - padding, (viewFrameHeight - label2.frame.size.height) / 2, label2.frame.size.width, label2.frame.size.height);
-
-    [self.resolutionDisplayView addSubview:label1];
-    [self.resolutionDisplayView addSubview:label2];
 }
 
 - (void) bitrateSliderMoved {

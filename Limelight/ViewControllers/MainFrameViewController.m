@@ -49,7 +49,6 @@
     UIAlertController* _pairAlert;
     LoadingFrameViewController* _loadingFrame;
     UIScrollView* hostScrollView;
-    FrontViewPosition currentPosition;
     NSArray* _sortedAppList;
     NSCache* _boxArtCache;
     bool _background;
@@ -115,18 +114,6 @@ static NSMutableSet* hostList;
         [self->_discMan startDiscovery];
         [self alreadyPaired];
     });
-}
-
-- (void)disableUpButton {
-#if !TARGET_OS_TV
-    [self->_upButton setTitle:nil];
-#endif
-}
-
-- (void)enableUpButton {
-#if !TARGET_OS_TV
-    [self->_upButton setTitle:@"Select New Host"];
-#endif
 }
 
 - (void)updateTitle {
@@ -310,8 +297,7 @@ static NSMutableSet* hostList;
     _deepLinkAppQuery = nil;
     
     [self updateTitle];
-    [self disableUpButton];
-    
+
     [self.collectionView reloadData];
     [self.view addSubview:hostScrollView];
 }
@@ -348,7 +334,6 @@ static NSMutableSet* hostList;
     Log(LOG_D, @"Clicked host: %@", host.name);
     _selectedHost = host;
     [self updateTitle];
-    [self enableUpButton];
     [self disableNavigation];
     
 #if TARGET_OS_TV
@@ -716,15 +701,6 @@ static NSMutableSet* hostList;
     Log(LOG_D, @"Long clicked app: %@", app.name);
     
     [_appManager stopRetrieving];
-    
-#if !TARGET_OS_TV
-    if (currentPosition != FrontViewPositionLeft) {
-        // This must not be animated because we need the position
-        // to change (and notify our callback to save settings data)
-        // before we call prepareToStreamApp.
-        [[self revealViewController] revealToggleAnimated:NO];
-    }
-#endif
 
     TemporaryApp* currentApp = [self findRunningApp:app.host];
     
@@ -852,16 +828,7 @@ static NSMutableSet* hostList;
     Log(LOG_D, @"Clicked app: %@", app.name);
     
     [_appManager stopRetrieving];
-    
-#if !TARGET_OS_TV
-    if (currentPosition != FrontViewPositionLeft) {
-        // This must not be animated because we need the position
-        // to change (and notify our callback to save settings data)
-        // before we call prepareToStreamApp.
-        [[self revealViewController] revealToggleAnimated:NO];
-    }
-#endif
-    
+
     if ([self findRunningApp:app.host]) {
         // If there's a running app, display a menu
         [self appLongClicked:app view:view];
@@ -879,17 +846,6 @@ static NSMutableSet* hostList;
     }
     return nil;
 }
-
-#if !TARGET_OS_TV
-- (void)revealController:(SWRevealViewController *)revealController didMoveToPosition:(FrontViewPosition)position {
-    // If we moved back to the center position, we should save the settings
-    if (position == FrontViewPositionLeft) {
-        [(SettingsViewController*)[revealController rearViewController] saveSettings];
-    }
-    
-    currentPosition = position;
-}
-#endif
 
 #if TARGET_OS_TV
 - (void)collectionView:(UICollectionView *)collectionView didSelectItemAtIndexPath:(NSIndexPath *)indexPath {
@@ -934,24 +890,11 @@ static NSMutableSet* hostList;
     [super viewDidLoad];
         
 #if !TARGET_OS_TV
-    // Set the side bar button action. When it's tapped, it'll show the sidebar.
-    [_settingsButton setTarget:self.revealViewController];
-    [_settingsButton setAction:@selector(revealToggle:)];
-    
-    // Set the host name button action. When it's tapped, it'll show the host selection view.
-    [_upButton setTarget:self];
-    [_upButton setAction:@selector(showHostSelectionView)];
-    [self disableUpButton];
-    
-    // Set the gesture
-    [self.view addGestureRecognizer:self.revealViewController.panGestureRecognizer];
-    
-    // Get callbacks associated with the viewController
-    [self.revealViewController setDelegate:self];
-    
-    // Disable bounce-back on reveal VC otherwise the settings will snap closed
-    // if the user drags all the way off the screen opposite the settings pane.
-    self.revealViewController.bounceBackOnOverdraw = NO;
+    self.navigationItem.rightBarButtonItem =
+        [[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"gearshape"]
+                                         style:UIBarButtonItemStylePlain
+                                        target:self
+                                        action:@selector(showSettings)];
 #else
     // The settings button will direct the user into the Settings app on tvOS
     [_settingsButton setTarget:self];
@@ -969,10 +912,7 @@ static NSMutableSet* hostList;
 #endif
     
     _loadingFrame = [self.storyboard instantiateViewControllerWithIdentifier:@"loadingFrame"];
-    
-    // Set the current position to the center
-    currentPosition = FrontViewPositionLeft;
-    
+
     // Set up crypto
     [CryptoManager generateKeyPairUsingSSL];
     _uniqueId = [IdManager getUniqueId];
@@ -1183,15 +1123,6 @@ static NSMutableSet* hostList;
     Log(LOG_I, @"%@ application from deep link: %@", runningApp != nil ? @"Resuming" : @"Launching", app.name);
     [_appManager stopRetrieving];
 
-#if !TARGET_OS_TV
-    if (currentPosition != FrontViewPositionLeft) {
-        // This must not be animated because we need the position
-        // to change (and notify our callback to save settings data)
-        // before we call prepareToStreamApp.
-        [[self revealViewController] revealToggleAnimated:NO];
-    }
-#endif
-
     [self prepareToStreamApp:app];
     [self performSegueWithIdentifier:@"createStreamFrame" sender:nil];
 }
@@ -1216,18 +1147,9 @@ static NSMutableSet* hostList;
 - (void)viewDidAppear:(BOOL)animated
 {
     [super viewDidAppear:animated];
-    
-#if !TARGET_OS_TV
-    [[self revealViewController] setPrimaryViewController:self];
-#endif
-    
+
     [self.navigationController setNavigationBarHidden:NO animated:YES];
-    
-    // Hide 1px border line
-    UIImage* fakeImage = [[UIImage alloc] init];
-    [self.navigationController.navigationBar setShadowImage:fakeImage];
-    [self.navigationController.navigationBar setBackgroundImage:fakeImage forBarPosition:UIBarPositionAny barMetrics:UIBarMetricsDefault];
-    
+
     // Check for a pending shortcut action when appearing
     [self handlePendingShortcutAction];
     
@@ -1533,14 +1455,26 @@ static NSMutableSet* hostList;
 #endif
 
 - (void) disableNavigation {
-    self.navigationController.navigationBar.topItem.rightBarButtonItem.enabled = NO;
-    self.navigationController.navigationBar.topItem.leftBarButtonItem.enabled = NO;
+    self.navigationItem.rightBarButtonItem.enabled = NO;
 }
 
 - (void) enableNavigation {
-    self.navigationController.navigationBar.topItem.rightBarButtonItem.enabled = YES;
-    self.navigationController.navigationBar.topItem.leftBarButtonItem.enabled = YES;
+    self.navigationItem.rightBarButtonItem.enabled = YES;
 }
+
+#if !TARGET_OS_TV
+- (void) showSettings {
+    SettingsViewController* settings = [self.storyboard instantiateViewControllerWithIdentifier:@"settings"];
+    UINavigationController* nav = [[UINavigationController alloc] initWithRootViewController:settings];
+    nav.modalPresentationStyle = UIModalPresentationPageSheet;
+
+    UISheetPresentationController* sheet = nav.sheetPresentationController;
+    sheet.detents = @[[UISheetPresentationControllerDetent largeDetent]];
+    sheet.prefersGrabberVisible = YES;
+
+    [self presentViewController:nav animated:YES completion:nil];
+}
+#endif
 
 #if TARGET_OS_TV
 - (BOOL)canBecomeFocused {

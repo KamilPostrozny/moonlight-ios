@@ -53,15 +53,6 @@
 #endif
 }
 
-- (void)viewDidAppear:(BOOL)animated
-{
-    [super viewDidAppear:animated];
-    
-#if !TARGET_OS_TV
-    [[self revealViewController] setPrimaryViewController:self];
-#endif
-}
-
 #if TARGET_OS_TV
 - (void)controllerPauseButtonPressed:(id)sender { }
 - (void)controllerPauseButtonDoublePressed:(id)sender {
