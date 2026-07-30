@@ -533,6 +533,15 @@ static NSMutableSet* hostList;
     }
     
     Log(LOG_D, @"Clicked host: %@", host.name);
+    if (host != _selectedHost) {
+        // Filters are per-PC. Switching hosts no longer routes through
+        // showHostSelectionView, so reset them here too.
+        _showHiddenApps = NO;
+        _searchText = nil;
+#if !TARGET_OS_TV
+        self.navigationItem.searchController.searchBar.text = nil;
+#endif
+    }
     _selectedHost = host;
     [self updateTitle];
     [self disableNavigation];
@@ -722,7 +731,6 @@ static NSMutableSet* hostList;
     [[self activeViewController] presentViewController:longClickAlert animated:YES completion:nil];
 }
 
-#if !TARGET_OS_TV
 - (void) testNetwork {
     [self showLoadingFrame:^{
         dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
@@ -766,7 +774,10 @@ static NSMutableSet* hostList;
     }
 }
 
+#if !TARGET_OS_TV
 - (UIMenu*) gamesMenu {
+    __weak typeof(self) weakSelf = self;
+
     TemporaryHost* host = _selectedHost;
     if (host == nil) {
         return nil;
@@ -778,15 +789,23 @@ static NSMutableSet* hostList;
                                            image:[UIImage systemImageNamed:@"eye"]
                                       identifier:nil
                                          handler:^(UIAction* action) {
-        self->_showHiddenApps = !self->_showHiddenApps;
-        [self updateAppsForHost:host];
+        typeof(self) strongSelf = weakSelf;
+        if (strongSelf == nil) {
+            return;
+        }
+        strongSelf->_showHiddenApps = !strongSelf->_showHiddenApps;
+        [strongSelf updateAppsForHost:host];
     }]];
 
     [actions addObject:[UIAction actionWithTitle:@"Test Network"
                                            image:[UIImage systemImageNamed:@"network"]
                                       identifier:nil
                                          handler:^(UIAction* action) {
-        [self testNetwork];
+        typeof(self) strongSelf = weakSelf;
+        if (strongSelf == nil) {
+            return;
+        }
+        [strongSelf testNetwork];
     }]];
 
     [actions addObject:[UIAction actionWithTitle:@"Connection Help"
@@ -800,7 +819,11 @@ static NSMutableSet* hostList;
                                            image:[UIImage systemImageNamed:@"trash"]
                                       identifier:nil
                                          handler:^(UIAction* action) {
-        [self removeHost:host];
+        typeof(self) strongSelf = weakSelf;
+        if (strongSelf == nil) {
+            return;
+        }
+        [strongSelf removeHost:host];
     }];
     remove.attributes = UIMenuElementAttributesDestructive;
     [actions addObject:remove];
@@ -952,7 +975,6 @@ static NSMutableSet* hostList;
 #endif
 }
 
-#if !TARGET_OS_TV
 // Quits the app currently running on its host, then runs completion on the
 // main thread if the quit succeeded. Displays its own failure alert.
 - (void) quitRunningApp:(TemporaryApp*)currentApp then:(void (^)(void))completion {
@@ -1008,7 +1030,6 @@ static NSMutableSet* hostList;
         });
     }];
 }
-#endif
 
 - (void)appLongClicked:(TemporaryApp *)app view:(UIView *)view {
     Log(LOG_D, @"Long clicked app: %@", app.name);
@@ -1194,6 +1215,23 @@ static NSMutableSet* hostList;
         UIContentUnavailableConfiguration* config = [UIContentUnavailableConfiguration loadingConfiguration];
         config.text = @"Looking for PCs";
         config.secondaryText = @"Moonlight is searching your network. Make sure your PC is awake and running Sunshine or GeForce Experience.";
+
+        __weak typeof(self) weakSelf = self;
+        UIButtonConfiguration* buttonConfig = [UIButtonConfiguration borderedProminentButtonConfiguration];
+        buttonConfig.title = @"Add PC Manually";
+        buttonConfig.baseBackgroundColor = [MoonlightTheme accentColor];
+        config.button = buttonConfig;
+        config.buttonProperties.primaryAction = [UIAction actionWithTitle:@"Add PC Manually"
+                                                                    image:nil
+                                                               identifier:nil
+                                                                  handler:^(UIAction* action) {
+            typeof(self) strongSelf = weakSelf;
+            if (strongSelf == nil) {
+                return;
+            }
+            [strongSelf addHostClicked];
+        }];
+
         self.contentUnavailableConfiguration = config;
         return;
     }
@@ -1302,8 +1340,19 @@ static NSMutableSet* hostList;
     return [[UICollectionViewCompositionalLayout alloc]
             initWithSectionProvider:^NSCollectionLayoutSection*(NSInteger index, id<NSCollectionLayoutEnvironment> env) {
         MainFrameViewController* self = weakSelf;
-        if (self == nil || index >= self->_sections.count) {
+        if (self == nil) {
+            // Unreachable in practice: this block is retained (transitively)
+            // by self.collectionView, which self owns, so self cannot be
+            // deallocated while the layout is still asking for sections.
+            // There's no self to build a fallback section from here, so nil
+            // is the only option.
             return nil;
+        }
+        if (index >= self->_sections.count) {
+            // Defensive: UICollectionViewCompositionalLayout throws on a nil
+            // section, so don't let a would-be inconsistency become a hard
+            // crash. Degrade to the hosts section instead.
+            return [self makeHostsSection];
         }
 
         switch ([self sectionAtIndex:index]) {

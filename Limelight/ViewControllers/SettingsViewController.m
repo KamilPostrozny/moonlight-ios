@@ -390,7 +390,7 @@ BOOL isCustomResolution(CGSize res) {
     _bitrateSlider.value = [self getSliderValueForBitrate:_bitrate];
     _bitrateSlider.minimumTrackTintColor = [MoonlightTheme accentColor];
     [_bitrateSlider addTarget:self action:@selector(bitrateSliderMoved) forControlEvents:UIControlEventValueChanged];
-    [_bitrateSlider addTarget:self action:@selector(settingsChanged) forControlEvents:UIControlEventTouchUpInside | UIControlEventTouchUpOutside];
+    [_bitrateSlider addTarget:self action:@selector(settingsChanged) forControlEvents:UIControlEventTouchUpInside | UIControlEventTouchUpOutside | UIControlEventTouchCancel];
 
     UIStackView* header = [[UIStackView alloc] initWithArrangedSubviews:@[caption, _bitrateValueLabel]];
     header.axis = UILayoutConstraintAxisHorizontal;

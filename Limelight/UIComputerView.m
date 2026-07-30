@@ -19,7 +19,6 @@
     UILabel* _nameLabel;
     UILabel* _statusLabel;
     UIActivityIndicatorView* _spinner;
-    BOOL _isAddButton;
 #else
     UIImageView* _hostIcon;
     UILabel* _hostLabel;
@@ -190,7 +189,6 @@ static const int LABEL_DY = 20;
 - (id) initForAddWithCallback:(id<HostCallback>)callback {
     self = [self init];
     _callback = callback;
-    _isAddButton = YES;
 
     [self addTarget:self action:@selector(addClicked) forControlEvents:UIControlEventPrimaryActionTriggered];
 
