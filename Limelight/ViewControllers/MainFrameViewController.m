@@ -1459,6 +1459,11 @@ static NSMutableSet* hostList;
     search.searchBar.placeholder = @"Search games";
     self.navigationItem.searchController = search;
     self.navigationItem.hidesSearchBarWhenScrolling = YES;
+    // HYPOTHESIS (unverified on device, see device-round-1-report.md Defect 2):
+    // iOS 26's default search bar placement renders as a full-bleed row that
+    // ignores the safe area in landscape with a side notch. Integrated keeps
+    // the field inside the (already safe-area-aware) navigation bar.
+    self.navigationItem.preferredSearchBarPlacement = UINavigationItemSearchBarPlacementIntegrated;
 
     UIRefreshControl* refresh = [[UIRefreshControl alloc] init];
     [refresh addTarget:self action:@selector(pullToRefresh:) forControlEvents:UIControlEventValueChanged];
