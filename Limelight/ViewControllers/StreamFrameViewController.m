@@ -761,6 +761,13 @@
     return YES;
 }
 
+- (UIInterfaceOrientationMask) supportedInterfaceOrientations {
+    // The stream itself is always landscape; rotating mid-session would
+    // force a resolution renegotiation and the on-screen controls are laid
+    // out for landscape.
+    return UIInterfaceOrientationMaskLandscape;
+}
+
 - (BOOL)prefersPointerLocked {
     // Pointer lock breaks the UIKit mouse APIs, which is a problem because
     // GCMouse is horribly broken on iOS 14.0 for certain mice. Only lock
