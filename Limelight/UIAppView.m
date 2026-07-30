@@ -15,7 +15,6 @@ static const float REFRESH_CYCLE = 1.0f;
 @implementation UIAppView {
     TemporaryApp* _app;
     UILabel* _appLabel;
-    UIImageView* _appOverlay;
     UIImageView* _appImage;
     NSCache* _artCache;
     id<AppCallback> _callback;
@@ -23,6 +22,10 @@ static const float REFRESH_CYCLE = 1.0f;
     UILabel* _nameLabel;
     UILabel* _badgeLabel;
     UIVisualEffectView* _badgeGlass;
+#else
+    // tvOS still uses a centred play-icon overlay; iOS shows a RUNNING badge
+    // instead (see updateAppImage below), so this is tvOS-only now.
+    UIImageView* _appOverlay;
 #endif
 }
 
@@ -117,19 +120,6 @@ static UIImage* noImage;
     _nameLabel.translatesAutoresizingMaskIntoConstraints = NO;
     [self addSubview:_nameLabel];
 
-    _appOverlay = [[UIImageView alloc] init];
-    _appOverlay.contentMode = UIViewContentModeScaleAspectFit;
-    _appOverlay.tintColor = [UIColor whiteColor];
-    _appOverlay.preferredSymbolConfiguration =
-        [UIImageSymbolConfiguration configurationWithPointSize:44 weight:UIImageSymbolWeightSemibold];
-    _appOverlay.layer.shadowColor = [UIColor blackColor].CGColor;
-    _appOverlay.layer.shadowOffset = CGSizeZero;
-    _appOverlay.layer.shadowOpacity = 1.0f;
-    _appOverlay.layer.shadowRadius = 6.0f;
-    _appOverlay.hidden = YES;
-    _appOverlay.translatesAutoresizingMaskIntoConstraints = NO;
-    [_appImage addSubview:_appOverlay];
-
     _badgeGlass = [MoonlightTheme glassViewWithTint:nil];
     _badgeGlass.layer.cornerRadius = 9.0f;
     _badgeGlass.layer.cornerCurve = kCACornerCurveContinuous;
@@ -156,9 +146,6 @@ static UIImage* noImage;
         [_appLabel.leadingAnchor constraintEqualToAnchor:_appImage.leadingAnchor constant:8],
         [_appLabel.trailingAnchor constraintEqualToAnchor:_appImage.trailingAnchor constant:-8],
         [_appLabel.centerYAnchor constraintEqualToAnchor:_appImage.centerYAnchor],
-
-        [_appOverlay.centerXAnchor constraintEqualToAnchor:_appImage.centerXAnchor],
-        [_appOverlay.centerYAnchor constraintEqualToAnchor:_appImage.centerYAnchor],
 
         [_badgeGlass.topAnchor constraintEqualToAnchor:_appImage.topAnchor constant:8],
         [_badgeGlass.trailingAnchor constraintEqualToAnchor:_appImage.trailingAnchor constant:-8],
@@ -226,18 +213,20 @@ static UIImage* noImage;
     BOOL running = [_app.id isEqualToString:_app.host.currentGame];
 
     _appLabel.text = noAppImage ? _app.name : nil;
-    // Hide the in-art fallback label while the play overlay is shown so they
-    // don't draw on top of each other ("D▶p") — the tile's _nameLabel below
-    // the art already shows the name regardless.
-    _appLabel.hidden = !noAppImage || running;
+    _appLabel.hidden = !noAppImage;
 
     _nameLabel.text = _app.name;
 
-    _appOverlay.image = running ? [UIImage systemImageNamed:@"play.circle.fill"] : nil;
-    _appOverlay.hidden = !running;
-
+    // The running app is already called out by the Continue section, so this
+    // tile only needs a status badge, not a second play affordance sitting on
+    // top of the artwork. HIDDEN wins over RUNNING — a hidden app that's
+    // running is the rarer, more surprising state.
     if (_app.hidden) {
         _badgeLabel.text = @"HIDDEN";
+        _badgeGlass.hidden = NO;
+    }
+    else if (running) {
+        _badgeLabel.text = @"RUNNING";
         _badgeGlass.hidden = NO;
     }
     else {
