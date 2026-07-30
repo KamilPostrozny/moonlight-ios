@@ -49,8 +49,8 @@ git push -u origin liquid-glass-redesign
 # Feature branches do NOT build on push. Dispatch explicitly.
 gh workflow run build-ipa.yml --ref liquid-glass-redesign
 
-# Dispatch does not print a run id; look it up.
-gh run list --branch liquid-glass-redesign --limit 1
+# Dispatch does not print a run id; look it up — and check the sha it built.
+gh run list --branch liquid-glass-redesign --limit 1 --json databaseId,headSha,conclusion
 gh run watch <run-id> --exit-status --compact
 
 # Green is not enough. Inspect the artifact.
@@ -61,7 +61,15 @@ file Payload/Moonlight.app/Moonlight                              # expect: Mach
 strings Payload/Moonlight.app/Info.plist | grep -oE "iphoneos[0-9.]+"   # expect: iphoneos26.x
 ```
 
-Each task below adds a task-specific `strings` grep proving its new code actually linked, plus a list of what Kamil should look at after sideloading. **Never claim a task works without a green run id and the artifact checks above.**
+**Check the `headSha` of the run you are about to trust.** A green run proves
+nothing if it built a commit that predates your work. Task 2's implementer
+reported success against a run whose `headSha` was the task's own *base*
+commit, because it never pushed — the code in question had never been
+compiled. Before reading a conclusion, confirm the run's `headSha` matches the
+commit you just made. Both `gh run list --json headSha` and
+`git ls-remote origin liquid-glass-redesign` will tell you.
+
+Each task below adds a task-specific `strings` grep proving its new code actually linked, plus a list of what Kamil should look at after sideloading. **Never claim a task works without a green run id whose `headSha` is your commit, and the artifact checks above.**
 
 ---
 
