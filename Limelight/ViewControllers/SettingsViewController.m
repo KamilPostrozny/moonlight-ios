@@ -178,6 +178,12 @@ BOOL isCustomResolution(CGSize res) {
 
     _codecPref = currentSettings.preferredCodec;
     _onscreenControls = [currentSettings.onscreenControls integerValue];
+    if (_onscreenControls < 0 || _onscreenControls > 3) {
+        // Guard against out-of-range persisted data (bad migration, manual DB edit,
+        // a rollback from a version with more options) — controlTitles[] in
+        // rebuildRows is a fixed 4-element array and would throw otherwise.
+        _onscreenControls = 1;   // Auto
+    }
     _optimizeGames = currentSettings.optimizeGames;
     _multiController = currentSettings.multiController;
     _swapABXYButtons = currentSettings.swapABXYButtons;
@@ -252,6 +258,7 @@ BOOL isCustomResolution(CGSize res) {
 
 - (UIMenu*) resolutionMenu {
     NSMutableArray<UIAction*>* actions = [NSMutableArray array];
+    __weak typeof(self) weakSelf = self;
 
     for (NSInteger i = 0; i < RESOLUTION_TABLE_SIZE; i++) {
         // 4K needs an A9 or later, which we judge by HEVC decode support.
@@ -261,14 +268,18 @@ BOOL isCustomResolution(CGSize res) {
 
         NSString* title = (i == RESOLUTION_TABLE_CUSTOM_INDEX) ? @"Custom…" : [self resolutionTitleForIndex:i];
         UIAction* action = [UIAction actionWithTitle:title image:nil identifier:nil handler:^(UIAction* a) {
-            if (i == RESOLUTION_TABLE_CUSTOM_INDEX) {
-                [self promptCustomResolutionDialog];
+            typeof(self) strongSelf = weakSelf;
+            if (strongSelf == nil) {
                 return;
             }
-            self->_resolutionIndex = i;
-            self->_lastSelectedResolutionIndex = i;
-            [self updateBitrate];
-            [self settingsChanged];
+            if (i == RESOLUTION_TABLE_CUSTOM_INDEX) {
+                [strongSelf promptCustomResolutionDialog];
+                return;
+            }
+            strongSelf->_resolutionIndex = i;
+            strongSelf->_lastSelectedResolutionIndex = i;
+            [strongSelf updateBitrate];
+            [strongSelf settingsChanged];
         }];
         action.state = (_resolutionIndex == i) ? UIMenuElementStateOn : UIMenuElementStateOff;
         [actions addObject:action];
@@ -279,13 +290,18 @@ BOOL isCustomResolution(CGSize res) {
 
 - (UIMenu*) framerateMenu {
     NSMutableArray<UIAction*>* actions = [NSMutableArray array];
+    __weak typeof(self) weakSelf = self;
 
     for (NSNumber* fps in (_support120Fps ? @[@30, @60, @120] : @[@30, @60])) {
         UIAction* action = [UIAction actionWithTitle:[NSString stringWithFormat:@"%@ FPS", fps]
                                                image:nil identifier:nil handler:^(UIAction* a) {
-            self->_framerate = fps.integerValue;
-            [self updateBitrate];
-            [self settingsChanged];
+            typeof(self) strongSelf = weakSelf;
+            if (strongSelf == nil) {
+                return;
+            }
+            strongSelf->_framerate = fps.integerValue;
+            [strongSelf updateBitrate];
+            [strongSelf settingsChanged];
         }];
         action.state = (_framerate == fps.integerValue) ? UIMenuElementStateOn : UIMenuElementStateOff;
         [actions addObject:action];
@@ -314,12 +330,17 @@ BOOL isCustomResolution(CGSize res) {
     [prefs addObject:@(CODEC_PREF_AUTO)];
 
     NSMutableArray<UIAction*>* actions = [NSMutableArray array];
+    __weak typeof(self) weakSelf = self;
     for (NSNumber* pref in prefs) {
         uint32_t value = (uint32_t)pref.unsignedIntValue;
         UIAction* action = [UIAction actionWithTitle:[self codecTitleForPref:value]
                                                image:nil identifier:nil handler:^(UIAction* a) {
-            self->_codecPref = value;
-            [self settingsChanged];
+            typeof(self) strongSelf = weakSelf;
+            if (strongSelf == nil) {
+                return;
+            }
+            strongSelf->_codecPref = value;
+            [strongSelf settingsChanged];
         }];
         action.state = (_codecPref == value) ? UIMenuElementStateOn : UIMenuElementStateOff;
         [actions addObject:action];
@@ -332,11 +353,16 @@ BOOL isCustomResolution(CGSize res) {
                         current:(NSInteger)current
                          setter:(void (^)(NSInteger))setter {
     NSMutableArray<UIAction*>* actions = [NSMutableArray array];
+    __weak typeof(self) weakSelf = self;
 
     [titles enumerateObjectsUsingBlock:^(NSString* title, NSUInteger index, BOOL* stop) {
         UIAction* action = [UIAction actionWithTitle:title image:nil identifier:nil handler:^(UIAction* a) {
+            typeof(self) strongSelf = weakSelf;
+            if (strongSelf == nil) {
+                return;
+            }
             setter(index);
-            [self settingsChanged];
+            [strongSelf settingsChanged];
         }];
         action.state = (current == (NSInteger)index) ? UIMenuElementStateOn : UIMenuElementStateOff;
         [actions addObject:action];
@@ -387,6 +413,8 @@ BOOL isCustomResolution(CGSize res) {
 }
 
 - (void) rebuildRows {
+    __weak typeof(self) weakSelf = self;
+
     _resolutionButton = [self menuButtonWithTitle:[self resolutionTitleForIndex:_resolutionIndex] menu:[self resolutionMenu]];
     _framerateButton = [self menuButtonWithTitle:[NSString stringWithFormat:@"%ld FPS", (long)_framerate] menu:[self framerateMenu]];
     _codecButton = [self menuButtonWithTitle:[self codecTitleForPref:_codecPref] menu:[self codecMenu]];
@@ -396,7 +424,11 @@ BOOL isCustomResolution(CGSize res) {
                                                    menu:[self indexMenuWithTitles:controlTitles
                                                                           current:_onscreenControls
                                                                            setter:^(NSInteger index) {
-        self->_onscreenControls = index;
+        typeof(self) strongSelf = weakSelf;
+        if (strongSelf == nil) {
+            return;
+        }
+        strongSelf->_onscreenControls = index;
     }]];
     // On-screen controls are meaningless when touch acts as a touchscreen.
     _onscreenControlsButton.enabled = !_absoluteTouchMode;
@@ -406,7 +438,11 @@ BOOL isCustomResolution(CGSize res) {
                                               menu:[self indexMenuWithTitles:pacingTitles
                                                                      current:(_useFramePacing ? 1 : 0)
                                                                       setter:^(NSInteger index) {
-        self->_useFramePacing = (index == 1);
+        typeof(self) strongSelf = weakSelf;
+        if (strongSelf == nil) {
+            return;
+        }
+        strongSelf->_useFramePacing = (index == 1);
     }]];
 
     _touchModeControl = [[UISegmentedControl alloc] initWithItems:@[@"Touchpad", @"Touchscreen"]];
