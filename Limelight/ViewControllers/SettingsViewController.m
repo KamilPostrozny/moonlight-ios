@@ -151,7 +151,14 @@ BOOL isCustomResolution(CGSize res) {
     CGFloat streamWidthPoints = MAX(rawWidth, rawHeight);
     CGFloat streamHeightPoints = MIN(rawWidth, rawHeight);
 
-    CGFloat safeAreaWidth = (streamWidthPoints - window.safeAreaInsets.left - window.safeAreaInsets.right) * screenScale;
+    // Streaming is always landscape, so this wants the inset that applies in
+    // landscape. iOS reports the sensor housing as `top` in portrait and as
+    // both `left` and `right` in landscape, so take whichever axis currently
+    // carries it — otherwise opening Settings in portrait reads 0 here and
+    // Safe Area collapses onto Full Screen.
+    UIEdgeInsets insets = window.safeAreaInsets;
+    CGFloat sideInset = MAX(insets.top, MAX(insets.left, insets.right));
+    CGFloat safeAreaWidth = (streamWidthPoints - 2 * sideInset) * screenScale;
     CGFloat fullScreenWidth = streamWidthPoints * screenScale;
     CGFloat fullScreenHeight = streamHeightPoints * screenScale;
 
@@ -304,6 +311,13 @@ BOOL isCustomResolution(CGSize res) {
     for (NSInteger i = 0; i < RESOLUTION_TABLE_SIZE; i++) {
         // 4K needs an A9 or later, which we judge by HEVC decode support.
         if (i == 3 && !_hevcSupported) {
+            continue;
+        }
+
+        // On hardware with no sensor housing (iPad, older iPhones), Safe
+        // Area computes to the same dimensions as Full Screen — don't offer
+        // two identical entries.
+        if (i == 4 && CGSizeEqualToSize(resolutionTable[4], resolutionTable[5])) {
             continue;
         }
 
