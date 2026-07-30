@@ -224,6 +224,11 @@ typedef NS_ENUM(NSInteger, MoonlightSection) {
 
 #endif
 
+#if !TARGET_OS_TV
+@interface MainFrameViewController () <UISearchResultsUpdating>
+@end
+#endif
+
 @implementation MainFrameViewController {
     NSOperationQueue* _opQueue;
     TemporaryHost* _selectedHost;
@@ -242,6 +247,7 @@ typedef NS_ENUM(NSInteger, MoonlightSection) {
     NSCache* _boxArtCache;
     bool _background;
     NSString* _deepLinkAppQuery;
+    NSString* _searchText;
 #if TARGET_OS_TV
     UITapGestureRecognizer* _menuRecognizer;
 #endif
@@ -309,11 +315,8 @@ static NSMutableSet* hostList;
     if (_selectedHost != nil) {
         self.title = _selectedHost.name;
     }
-    else if ([hostList count] == 0) {
-        self.title = @"Searching for PCs on your network...";
-    }
     else {
-        self.title = @"Select Host";
+        self.title = @"Moonlight";
     }
 }
 
@@ -1133,6 +1136,33 @@ static NSMutableSet* hostList;
 - (void) reloadEverything {
     [self rebuildSections];
     [self.collectionView reloadData];
+    [self updateEmptyState];
+}
+
+- (void) updateEmptyState {
+    if (_selectedHost == nil && _sortedHostList.count == 0) {
+        UIContentUnavailableConfiguration* config = [UIContentUnavailableConfiguration loadingConfiguration];
+        config.text = @"Looking for PCs";
+        config.secondaryText = @"Moonlight is searching your network. Make sure your PC is awake and running Sunshine or GeForce Experience.";
+        self.contentUnavailableConfiguration = config;
+        return;
+    }
+
+    if (_selectedHost == nil) {
+        UIContentUnavailableConfiguration* config = [UIContentUnavailableConfiguration emptyConfiguration];
+        config.image = [UIImage systemImageNamed:@"desktopcomputer"];
+        config.text = @"Choose a PC";
+        config.secondaryText = @"Pick one of the PCs above to see its games.";
+        self.contentUnavailableConfiguration = config;
+        return;
+    }
+
+    if (_sortedAppList.count == 0 && _searchText.length > 0) {
+        self.contentUnavailableConfiguration = [UIContentUnavailableConfiguration searchConfiguration];
+        return;
+    }
+
+    self.contentUnavailableConfiguration = nil;
 }
 
 - (NSCollectionLayoutBoundarySupplementaryItem*) makeSectionHeader {
@@ -1236,6 +1266,27 @@ static NSMutableSet* hostList;
         }
     } configuration:config];
 }
+
+- (void) updateSearchResultsForSearchController:(UISearchController*)searchController {
+    _searchText = searchController.searchBar.text;
+
+    if (_selectedHost != nil) {
+        [self updateAppsForHost:_selectedHost];
+    }
+}
+
+- (void) pullToRefresh:(UIRefreshControl*)sender {
+    [_discMan resetDiscoveryState];
+    [_discMan startDiscovery];
+
+    if (_selectedHost != nil && _selectedHost.pairState == PairStatePaired) {
+        // nil view: not a user tap on a host, so skip the cached-app-list fast
+        // path and refetch serverinfo. See hostClicked:view:.
+        [self hostClicked:_selectedHost view:nil];
+    }
+
+    [sender endRefreshing];
+}
 #endif
 
 #if TARGET_OS_TV
@@ -1285,6 +1336,17 @@ static NSMutableSet* hostList;
             forSupplementaryViewOfKind:UICollectionElementKindSectionHeader
                    withReuseIdentifier:@"header"];
     [self.collectionView setCollectionViewLayout:[self makeLayout] animated:NO];
+
+    UISearchController* search = [[UISearchController alloc] initWithSearchResultsController:nil];
+    search.searchResultsUpdater = self;
+    search.obscuresBackgroundDuringPresentation = NO;
+    search.searchBar.placeholder = @"Search games";
+    self.navigationItem.searchController = search;
+    self.navigationItem.hidesSearchBarWhenScrolling = YES;
+
+    UIRefreshControl* refresh = [[UIRefreshControl alloc] init];
+    [refresh addTarget:self action:@selector(pullToRefresh:) forControlEvents:UIControlEventValueChanged];
+    self.collectionView.refreshControl = refresh;
 #else
     // The settings button will direct the user into the Settings app on tvOS
     [_settingsButton setTarget:self];
@@ -1753,16 +1815,19 @@ static NSMutableSet* hostList;
     
     _sortedAppList = [host.appList allObjects];
     _sortedAppList = [_sortedAppList sortedArrayUsingSelector:@selector(compareName:)];
-    
-    if (!_showHiddenApps) {
-        NSMutableArray* visibleAppList = [NSMutableArray array];
-        for (TemporaryApp* app in _sortedAppList) {
-            if (!app.hidden) {
-                [visibleAppList addObject:app];
-            }
+
+    NSMutableArray* visibleAppList = [NSMutableArray array];
+    for (TemporaryApp* app in _sortedAppList) {
+        if (app.hidden && !_showHiddenApps) {
+            continue;
         }
-        _sortedAppList = visibleAppList;
+        if (_searchText.length > 0 &&
+            [app.name rangeOfString:_searchText options:NSCaseInsensitiveSearch].location == NSNotFound) {
+            continue;
+        }
+        [visibleAppList addObject:app];
     }
+    _sortedAppList = visibleAppList;
 
 #if !TARGET_OS_TV
     [self reloadEverything];
