@@ -238,6 +238,28 @@
     return _streamView;
 }
 
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+
+    // _streamView (and _scrollView, when present) are sized once in
+    // viewDidLoad from self.view.frame at that moment and never resized
+    // again. That's stale as soon as the view's bounds change for any
+    // reason — most importantly, requestOrientations: switching us into
+    // landscape after launching in portrait, but also any later rotation.
+    // Keep them pinned to the current bounds on every layout pass. This
+    // mirrors the original one-time sizing, so it doesn't interfere with the
+    // (currently disabled, #if 0 above) keyboard show/hide logic that
+    // resizes _scrollView.frame relative to itself: that logic sits behind
+    // #if 0 and never runs, so there is nothing active for this to fight.
+    if (_scrollView != nil) {
+        _scrollView.frame = self.view.bounds;
+        _streamView.frame = _scrollView.bounds;
+    }
+    else {
+        _streamView.frame = self.view.bounds;
+    }
+}
+
 - (void)willMoveToParentViewController:(UIViewController *)parent {
     // Only cleanup when we're being destroyed
     if (parent == nil) {
@@ -735,6 +757,53 @@
 }
 
 #if !TARGET_OS_TV
+// UINavigationController does not forward supportedInterfaceOrientations to
+// its top view controller, so that override alone never takes effect while
+// we're pushed inside one. Explicitly request the geometry change instead.
+- (void) requestOrientations:(UIInterfaceOrientationMask)orientations {
+    UIWindowScene* scene = self.view.window.windowScene;
+    if (scene == nil) {
+        for (UIScene* candidate in UIApplication.sharedApplication.connectedScenes) {
+            if ([candidate isKindOfClass:[UIWindowScene class]]) {
+                scene = (UIWindowScene*)candidate;
+                break;
+            }
+        }
+    }
+    if (scene == nil) {
+        return;
+    }
+
+    UIWindowSceneGeometryPreferencesIOS* preferences =
+        [[UIWindowSceneGeometryPreferencesIOS alloc] initWithInterfaceOrientations:orientations];
+    [scene requestGeometryUpdateWithPreferences:preferences errorHandler:^(NSError* error) {
+        Log(LOG_W, @"Geometry update failed: %@", error);
+    }];
+    [self setNeedsUpdateOfSupportedInterfaceOrientations];
+}
+
+- (void) viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+
+    // Force landscape before the stream is ever laid out, so it never starts
+    // portrait when launched while the device is held in portrait.
+    // self.view.window may still be nil here (we may not be installed in the
+    // window hierarchy yet) — requestOrientations: falls back to scanning
+    // connectedScenes for that case.
+    [self requestOrientations:UIInterfaceOrientationMaskLandscape];
+}
+
+- (void) viewWillDisappear:(BOOL)animated {
+    [super viewWillDisappear:animated];
+
+    // Restore the app's full orientation set on every exit path (graceful
+    // disconnect, error dialogs, inactivity timeout, edge swipe, backgrounding
+    // — they all funnel through returnToMainFrame's
+    // popToRootViewControllerAnimated:, which triggers this), or the
+    // browsing UI is left stuck in landscape.
+    [self requestOrientations:UIInterfaceOrientationMaskAllButUpsideDown];
+}
+
 // Require a confirmation when streaming to activate a system gesture
 - (UIRectEdge)preferredScreenEdgesDeferringSystemGestures {
     return UIRectEdgeAll;
