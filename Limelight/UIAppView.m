@@ -236,10 +236,6 @@ static UIImage* noImage;
         _badgeLabel.text = @"HIDDEN";
         _badgeGlass.hidden = NO;
     }
-    else if (_app.hdrSupported) {
-        _badgeLabel.text = @"HDR";
-        _badgeGlass.hidden = NO;
-    }
     else {
         _badgeGlass.hidden = YES;
     }
