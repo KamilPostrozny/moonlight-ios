@@ -225,11 +225,6 @@ typedef NS_ENUM(NSInteger, MoonlightSection) {
 
 #endif
 
-#if !TARGET_OS_TV
-@interface MainFrameViewController () <UISearchResultsUpdating>
-@end
-#endif
-
 @implementation MainFrameViewController {
     NSOperationQueue* _opQueue;
     TemporaryHost* _selectedHost;
@@ -248,7 +243,6 @@ typedef NS_ENUM(NSInteger, MoonlightSection) {
     NSCache* _boxArtCache;
     bool _background;
     NSString* _deepLinkAppQuery;
-    NSString* _searchText;
 #if !TARGET_OS_TV
     NSCache* _ambientCache;
     CAGradientLayer* _ambientLayer;
@@ -317,12 +311,7 @@ static NSMutableSet* hostList;
 }
 
 - (void)updateTitle {
-    if (_selectedHost != nil) {
-        self.title = _selectedHost.name;
-    }
-    else {
-        self.title = @"Moonlight";
-    }
+    self.title = @"Moonlight";
 }
 
 - (void)alreadyPaired {
@@ -534,13 +523,9 @@ static NSMutableSet* hostList;
     
     Log(LOG_D, @"Clicked host: %@", host.name);
     if (host != _selectedHost) {
-        // Filters are per-PC. Switching hosts no longer routes through
-        // showHostSelectionView, so reset them here too.
+        // The hidden-apps filter is per-PC. Switching hosts no longer routes
+        // through showHostSelectionView, so reset it here too.
         _showHiddenApps = NO;
-        _searchText = nil;
-#if !TARGET_OS_TV
-        self.navigationItem.searchController.searchBar.text = nil;
-#endif
     }
     _selectedHost = host;
     [self updateTitle];
@@ -1243,13 +1228,8 @@ static NSMutableSet* hostList;
         UIContentUnavailableConfiguration* config = [UIContentUnavailableConfiguration emptyConfiguration];
         config.image = [UIImage systemImageNamed:@"desktopcomputer"];
         config.text = @"Choose a PC";
-        config.secondaryText = @"Pick one of the PCs above to see its games.";
+        config.secondaryText = @"Pick one of the PCs above to see its applications.";
         self.contentUnavailableConfiguration = config;
-        return;
-    }
-
-    if (_sortedAppList.count == 0 && _searchText.length > 0) {
-        self.contentUnavailableConfiguration = [UIContentUnavailableConfiguration searchConfiguration];
         return;
     }
 
@@ -1369,14 +1349,6 @@ static NSMutableSet* hostList;
     } configuration:config];
 }
 
-- (void) updateSearchResultsForSearchController:(UISearchController*)searchController {
-    _searchText = searchController.searchBar.text;
-
-    if (_selectedHost != nil) {
-        [self updateAppsForHost:_selectedHost];
-    }
-}
-
 - (void) pullToRefresh:(UIRefreshControl*)sender {
     [_discMan resetDiscoveryState];
     [_discMan startDiscovery];
@@ -1452,18 +1424,6 @@ static NSMutableSet* hostList;
             forSupplementaryViewOfKind:UICollectionElementKindSectionHeader
                    withReuseIdentifier:@"header"];
     [self.collectionView setCollectionViewLayout:[self makeLayout] animated:NO];
-
-    UISearchController* search = [[UISearchController alloc] initWithSearchResultsController:nil];
-    search.searchResultsUpdater = self;
-    search.obscuresBackgroundDuringPresentation = NO;
-    search.searchBar.placeholder = @"Search games";
-    self.navigationItem.searchController = search;
-    self.navigationItem.hidesSearchBarWhenScrolling = YES;
-    // HYPOTHESIS (unverified on device, see device-round-1-report.md Defect 2):
-    // iOS 26's default search bar placement renders as a full-bleed row that
-    // ignores the safe area in landscape with a side notch. Integrated keeps
-    // the field inside the (already safe-area-aware) navigation bar.
-    self.navigationItem.preferredSearchBarPlacement = UINavigationItemSearchBarPlacementIntegrated;
 
     UIRefreshControl* refresh = [[UIRefreshControl alloc] init];
     [refresh addTarget:self action:@selector(pullToRefresh:) forControlEvents:UIControlEventValueChanged];
@@ -1967,10 +1927,6 @@ static NSMutableSet* hostList;
         if (app.hidden && !_showHiddenApps) {
             continue;
         }
-        if (_searchText.length > 0 &&
-            [app.name rangeOfString:_searchText options:NSCaseInsensitiveSearch].location == NSNotFound) {
-            continue;
-        }
         [visibleAppList addObject:app];
     }
     _sortedAppList = visibleAppList;
@@ -2131,7 +2087,7 @@ static NSMutableSet* hostList;
             header.titleLabel.text = @"Continue";
             break;
         case MoonlightSectionGames: {
-            header.titleLabel.text = @"Games";
+            header.titleLabel.text = @"Applications";
             header.accessoryButton.hidden = NO;
             [header.accessoryButton setImage:[UIImage systemImageNamed:@"ellipsis.circle"] forState:UIControlStateNormal];
             [header.accessoryButton setTitle:nil forState:UIControlStateNormal];
