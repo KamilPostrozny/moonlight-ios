@@ -694,8 +694,11 @@ static NSMutableSet* hostList;
     }
     else if (host.pairState == PairStatePaired) {
         [longClickAlert addAction:[UIAlertAction actionWithTitle:@"View All Apps" style:UIAlertActionStyleDefault handler:^(UIAlertAction* action){
-            self->_showHiddenApps = YES;
+            // hostClicked: clears the per-PC filters when the host changes, so
+            // the flag has to be set after it, not before, or the reset wins.
             [self hostClicked:host view:view];
+            self->_showHiddenApps = YES;
+            [self updateAppsForHost:host];
         }]];
         
 #if !TARGET_OS_TV
