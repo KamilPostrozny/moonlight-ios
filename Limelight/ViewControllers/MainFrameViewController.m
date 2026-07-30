@@ -111,6 +111,117 @@ typedef NS_ENUM(NSInteger, MoonlightSection) {
 
 @end
 
+// The "Continue" cell: the game currently running on the selected host, with
+// its two actions surfaced instead of buried in a long-press action sheet.
+@interface MoonlightHeroCell : UICollectionViewCell
+@property (nonatomic, copy) void (^onResume)(void);
+@property (nonatomic, copy) void (^onQuit)(void);
+- (void) configureWithApp:(TemporaryApp*)app hostName:(NSString*)hostName artwork:(UIImage*)artwork;
+@end
+
+@implementation MoonlightHeroCell {
+    UIVisualEffectView* _glass;
+    UIImageView* _artView;
+    UILabel* _titleLabel;
+    UILabel* _subtitleLabel;
+    UIButton* _resumeButton;
+    UIButton* _quitButton;
+}
+
+- (instancetype) initWithFrame:(CGRect)frame {
+    self = [super initWithFrame:frame];
+
+    _glass = [MoonlightTheme glassViewWithTint:nil];
+    _glass.layer.cornerRadius = [MoonlightTheme cardCornerRadius];
+    _glass.layer.cornerCurve = kCACornerCurveContinuous;
+    _glass.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.contentView addSubview:_glass];
+
+    _artView = [[UIImageView alloc] init];
+    _artView.contentMode = UIViewContentModeScaleAspectFill;
+    _artView.clipsToBounds = YES;
+    _artView.backgroundColor = [UIColor secondarySystemBackgroundColor];
+    _artView.layer.cornerRadius = [MoonlightTheme tileCornerRadius];
+    _artView.layer.cornerCurve = kCACornerCurveContinuous;
+    _artView.translatesAutoresizingMaskIntoConstraints = NO;
+
+    _titleLabel = [[UILabel alloc] init];
+    _titleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleTitle3];
+    _titleLabel.textColor = [UIColor labelColor];
+    _titleLabel.numberOfLines = 2;
+
+    _subtitleLabel = [[UILabel alloc] init];
+    _subtitleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
+    _subtitleLabel.textColor = [UIColor secondaryLabelColor];
+
+    _resumeButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    _resumeButton.configuration = [MoonlightTheme glassButtonWithTitle:@"Resume"
+                                                                 image:[UIImage systemImageNamed:@"play.fill"]
+                                                             prominent:YES];
+    [_resumeButton addTarget:self action:@selector(resumeTapped) forControlEvents:UIControlEventPrimaryActionTriggered];
+
+    _quitButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    _quitButton.configuration = [MoonlightTheme glassButtonWithTitle:@"Quit"
+                                                               image:[UIImage systemImageNamed:@"stop.fill"]
+                                                           prominent:NO];
+    [_quitButton addTarget:self action:@selector(quitTapped) forControlEvents:UIControlEventPrimaryActionTriggered];
+
+    UIStackView* buttons = [[UIStackView alloc] initWithArrangedSubviews:@[_resumeButton, _quitButton]];
+    buttons.axis = UILayoutConstraintAxisHorizontal;
+    buttons.spacing = 10;
+
+    UIView* spacer = [[UIView alloc] init];
+    [spacer setContentHuggingPriority:UILayoutPriorityDefaultLow forAxis:UILayoutConstraintAxisVertical];
+
+    UIStackView* textStack = [[UIStackView alloc] initWithArrangedSubviews:@[_titleLabel, _subtitleLabel, spacer, buttons]];
+    textStack.axis = UILayoutConstraintAxisVertical;
+    textStack.alignment = UIStackViewAlignmentLeading;
+    textStack.spacing = 4;
+    textStack.translatesAutoresizingMaskIntoConstraints = NO;
+
+    [self.contentView addSubview:_artView];
+    [self.contentView addSubview:textStack];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [_glass.topAnchor constraintEqualToAnchor:self.contentView.topAnchor],
+        [_glass.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor],
+        [_glass.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor],
+        [_glass.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor],
+
+        [_artView.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:16],
+        [_artView.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor constant:-16],
+        [_artView.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:16],
+        [_artView.widthAnchor constraintEqualToAnchor:_artView.heightAnchor multiplier:3.0f / 4.0f],
+
+        [textStack.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:16],
+        [textStack.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor constant:-16],
+        [textStack.leadingAnchor constraintEqualToAnchor:_artView.trailingAnchor constant:16],
+        [textStack.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-16],
+    ]];
+
+    return self;
+}
+
+- (void) configureWithApp:(TemporaryApp*)app hostName:(NSString*)hostName artwork:(UIImage*)artwork {
+    _titleLabel.text = app.name;
+    _subtitleLabel.text = [NSString stringWithFormat:@"Running on %@", hostName];
+    _artView.image = artwork;
+}
+
+- (void) resumeTapped {
+    if (self.onResume) {
+        self.onResume();
+    }
+}
+
+- (void) quitTapped {
+    if (self.onQuit) {
+        self.onQuit();
+    }
+}
+
+@end
+
 #endif
 
 @implementation MainFrameViewController {
@@ -577,33 +688,7 @@ static NSMutableSet* hostList;
 #endif
     }
     [longClickAlert addAction:[UIAlertAction actionWithTitle:@"Test Network" style:UIAlertActionStyleDefault handler:^(UIAlertAction* action) {
-        [self showLoadingFrame:^{
-            dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-                // Perform the network test on a GCD worker thread. It may take a while.
-                unsigned int portTestResult = LiTestClientConnectivity(CONN_TEST_SERVER, 443, ML_PORT_FLAG_ALL);
-                dispatch_sync(dispatch_get_main_queue(), ^{
-                    [self hideLoadingFrame:^{
-                        NSString* message;
-                        
-                        if (portTestResult == 0) {
-                            message = @"This network does not appear to be blocking Moonlight. If you still have trouble connecting, check your PC's firewall settings.\n\nVisit the Moonlight Setup Guide on GitHub for additional setup help and troubleshooting steps.";
-                        }
-                        else if (portTestResult == ML_TEST_RESULT_INCONCLUSIVE) {
-                            message = @"The network test could not be performed because none of Moonlight's connection testing servers were reachable. Check your Internet connection or try again later.";
-                        }
-                        else {
-                            char blockedPorts[512];
-                            LiStringifyPortFlags(portTestResult, "\n", blockedPorts, sizeof(blockedPorts));
-                            message = [NSString stringWithFormat:@"Your current network connection seems to be blocking Moonlight. Streaming may not work while connected to this network.\n\nThe following network ports were blocked:\n%s", blockedPorts];
-                        }
-                        
-                        UIAlertController* netTestAlert = [UIAlertController alertControllerWithTitle:@"Network Test Complete" message:message preferredStyle:UIAlertControllerStyleAlert];
-                        [netTestAlert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
-                        [[self activeViewController] presentViewController:netTestAlert animated:YES completion:nil];
-                    }];
-                });
-            });
-        }];
+        [self testNetwork];
     }]];
 #if !TARGET_OS_TV
     if (host.state != StateOnline) {
@@ -616,14 +701,7 @@ static NSMutableSet* hostList;
     }
 #endif
     [longClickAlert addAction:[UIAlertAction actionWithTitle:@"Remove Host" style:UIAlertActionStyleDestructive handler:^(UIAlertAction* action) {
-        [self->_discMan removeHostFromDiscovery:host];
-        DataManager* dataMan = [[DataManager alloc] init];
-        [dataMan removeHost:host];
-        @synchronized(hostList) {
-            [hostList removeObject:host];
-            [self updateAllHosts:[hostList allObjects]];
-        }
-        
+        [self removeHost:host];
     }]];
     [longClickAlert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
     
@@ -633,6 +711,93 @@ static NSMutableSet* hostList;
     longClickAlert.popoverPresentationController.sourceRect = CGRectMake(view.bounds.size.width / 2.0, view.bounds.size.height / 2.0, 1.0, 1.0); // center of the view
     [[self activeViewController] presentViewController:longClickAlert animated:YES completion:nil];
 }
+
+#if !TARGET_OS_TV
+- (void) testNetwork {
+    [self showLoadingFrame:^{
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+            // May take a while, so keep it off the main thread.
+            unsigned int portTestResult = LiTestClientConnectivity(CONN_TEST_SERVER, 443, ML_PORT_FLAG_ALL);
+            dispatch_sync(dispatch_get_main_queue(), ^{
+                [self hideLoadingFrame:^{
+                    NSString* message;
+
+                    if (portTestResult == 0) {
+                        message = @"This network does not appear to be blocking Moonlight. If you still have trouble connecting, check your PC's firewall settings.\n\nVisit the Moonlight Setup Guide on GitHub for additional setup help and troubleshooting steps.";
+                    }
+                    else if (portTestResult == ML_TEST_RESULT_INCONCLUSIVE) {
+                        message = @"The network test could not be performed because none of Moonlight's connection testing servers were reachable. Check your Internet connection or try again later.";
+                    }
+                    else {
+                        char blockedPorts[512];
+                        LiStringifyPortFlags(portTestResult, "\n", blockedPorts, sizeof(blockedPorts));
+                        message = [NSString stringWithFormat:@"Your current network connection seems to be blocking Moonlight. Streaming may not work while connected to this network.\n\nThe following network ports were blocked:\n%s", blockedPorts];
+                    }
+
+                    UIAlertController* netTestAlert = [UIAlertController alertControllerWithTitle:@"Network Test Complete" message:message preferredStyle:UIAlertControllerStyleAlert];
+                    [netTestAlert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+                    [[self activeViewController] presentViewController:netTestAlert animated:YES completion:nil];
+                }];
+            });
+        });
+    }];
+}
+
+- (void) removeHost:(TemporaryHost*)host {
+    [self->_discMan removeHostFromDiscovery:host];
+    DataManager* dataMan = [[DataManager alloc] init];
+    [dataMan removeHost:host];
+    @synchronized(hostList) {
+        [hostList removeObject:host];
+        [self updateAllHosts:[hostList allObjects]];
+    }
+    if (host == _selectedHost) {
+        [self showHostSelectionView];
+    }
+}
+
+- (UIMenu*) gamesMenu {
+    TemporaryHost* host = _selectedHost;
+    if (host == nil) {
+        return nil;
+    }
+
+    NSMutableArray<UIAction*>* actions = [NSMutableArray array];
+
+    [actions addObject:[UIAction actionWithTitle:(_showHiddenApps ? @"Hide Hidden Apps" : @"Show Hidden Apps")
+                                           image:[UIImage systemImageNamed:@"eye"]
+                                      identifier:nil
+                                         handler:^(UIAction* action) {
+        self->_showHiddenApps = !self->_showHiddenApps;
+        [self updateAppsForHost:host];
+    }]];
+
+    [actions addObject:[UIAction actionWithTitle:@"Test Network"
+                                           image:[UIImage systemImageNamed:@"network"]
+                                      identifier:nil
+                                         handler:^(UIAction* action) {
+        [self testNetwork];
+    }]];
+
+    [actions addObject:[UIAction actionWithTitle:@"Connection Help"
+                                           image:[UIImage systemImageNamed:@"questionmark.circle"]
+                                      identifier:nil
+                                         handler:^(UIAction* action) {
+        [Utils launchUrl:@"https://github.com/moonlight-stream/moonlight-docs/wiki/Troubleshooting"];
+    }]];
+
+    UIAction* remove = [UIAction actionWithTitle:@"Remove PC"
+                                           image:[UIImage systemImageNamed:@"trash"]
+                                      identifier:nil
+                                         handler:^(UIAction* action) {
+        [self removeHost:host];
+    }];
+    remove.attributes = UIMenuElementAttributesDestructive;
+    [actions addObject:remove];
+
+    return [UIMenu menuWithTitle:host.name children:actions];
+}
+#endif
 
 - (void) addHostClicked {
     Log(LOG_D, @"Clicked add host");
@@ -777,6 +942,64 @@ static NSMutableSet* hostList;
 #endif
 }
 
+#if !TARGET_OS_TV
+// Quits the app currently running on its host, then runs completion on the
+// main thread if the quit succeeded. Displays its own failure alert.
+- (void) quitRunningApp:(TemporaryApp*)currentApp then:(void (^)(void))completion {
+    [self showLoadingFrame: ^{
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+            HttpManager* hMan = [[HttpManager alloc] initWithHost:currentApp.host];
+            HttpResponse* quitResponse = [[HttpResponse alloc] init];
+            HttpRequest* quitRequest = [HttpRequest requestForResponse:quitResponse withUrlRequest:[hMan newQuitAppRequest]];
+
+            [self->_discMan pauseDiscoveryForHost:currentApp.host];
+            [hMan executeRequestSynchronously:quitRequest];
+            if (quitResponse.statusCode == 200) {
+                ServerInfoResponse* serverInfoResp = [[ServerInfoResponse alloc] init];
+                [hMan executeRequestSynchronously:[HttpRequest requestForResponse:serverInfoResp withUrlRequest:[hMan newServerInfoRequest:false]
+                                                                    fallbackError:401 fallbackRequest:[hMan newHttpServerInfoRequest]]];
+                if (![serverInfoResp isStatusOk] || [[serverInfoResp getStringTag:@"state"] hasSuffix:@"_SERVER_BUSY"]) {
+                    // Newer GFE reports success even when another client's app
+                    // survives the quit. Patch the response so the UI behaves.
+                    quitResponse.statusCode = 599;
+                }
+                else if ([serverInfoResp isStatusOk]) {
+                    [serverInfoResp populateHost:currentApp.host];
+                }
+            }
+            [self->_discMan resumeDiscoveryForHost:currentApp.host];
+
+            if (quitResponse.statusCode != 200) {
+                UIAlertController* alert = [UIAlertController alertControllerWithTitle:@"Quitting App Failed"
+                                                                               message:@"Failed to quit app. If this app was started by "
+                                            "another device, you'll need to quit from that device."
+                                                                        preferredStyle:UIAlertControllerStyleAlert];
+                [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [self updateAppsForHost:currentApp.host];
+                    [self hideLoadingFrame: ^{
+                        [[self activeViewController] presentViewController:alert animated:YES completion:nil];
+                    }];
+                });
+                return;
+            }
+
+            currentApp.host.currentGame = @"0";
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (completion != nil) {
+                    [self hideLoadingFrame:completion];
+                }
+                else {
+                    [self hideLoadingFrame:^{
+                        [self updateAppsForHost:currentApp.host];
+                    }];
+                }
+            });
+        });
+    }];
+}
+#endif
+
 - (void)appLongClicked:(TemporaryApp *)app view:(UIView *)view {
     Log(LOG_D, @"Long clicked app: %@", app.name);
     
@@ -819,68 +1042,21 @@ static NSMutableSet* hostList;
     
     if (currentApp != nil) {
         [alertController addAction:[UIAlertAction actionWithTitle:
-                                    [app.id isEqualToString:currentApp.id] ? @"Quit App" : @"Quit Running App and Start" style:UIAlertActionStyleDestructive handler:^(UIAlertAction* action){
-                                        Log(LOG_I, @"Quitting application: %@", currentApp.name);
-                                        [self showLoadingFrame: ^{
-                                            dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-                                                HttpManager* hMan = [[HttpManager alloc] initWithHost:app.host];
-                                                HttpResponse* quitResponse = [[HttpResponse alloc] init];
-                                                HttpRequest* quitRequest = [HttpRequest requestForResponse: quitResponse withUrlRequest:[hMan newQuitAppRequest]];
-                                                
-                                                // Exempt this host from discovery while handling the quit operation
-                                                [self->_discMan pauseDiscoveryForHost:app.host];
-                                                [hMan executeRequestSynchronously:quitRequest];
-                                                if (quitResponse.statusCode == 200) {
-                                                    ServerInfoResponse* serverInfoResp = [[ServerInfoResponse alloc] init];
-                                                    [hMan executeRequestSynchronously:[HttpRequest requestForResponse:serverInfoResp withUrlRequest:[hMan newServerInfoRequest:false]
-                                                                                                        fallbackError:401 fallbackRequest:[hMan newHttpServerInfoRequest]]];
-                                                    if (![serverInfoResp isStatusOk] || [[serverInfoResp getStringTag:@"state"] hasSuffix:@"_SERVER_BUSY"]) {
-                                                        // On newer GFE versions, the quit request succeeds even though the app doesn't
-                                                        // really quit if another client tries to kill your app. We'll patch the response
-                                                        // to look like the old error in that case, so the UI behaves.
-                                                        quitResponse.statusCode = 599;
-                                                    }
-                                                    else if ([serverInfoResp isStatusOk]) {
-                                                        // Update the host object with this info
-                                                        [serverInfoResp populateHost:app.host];
-                                                    }
-                                                }
-                                                [self->_discMan resumeDiscoveryForHost:app.host];
-
-                                                // If it fails, display an error and stop the current operation
-                                                if (quitResponse.statusCode != 200) {
-                                                    UIAlertController* alert = [UIAlertController alertControllerWithTitle:@"Quitting App Failed"
-                                                                                                message:@"Failed to quit app. If this app was started by "
-                                                             "another device, you'll need to quit from that device."
-                                                                                         preferredStyle:UIAlertControllerStyleAlert];
-                                                    [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
-                                                    dispatch_async(dispatch_get_main_queue(), ^{
-                                                        [self updateAppsForHost:app.host];
-                                                        [self hideLoadingFrame: ^{
-                                                            [[self activeViewController] presentViewController:alert animated:YES completion:nil];
-                                                        }];
-                                                    });
-                                                }
-                                                else {
-                                                    app.host.currentGame = @"0";
-                                                    dispatch_async(dispatch_get_main_queue(), ^{
-                                                        // If it succeeds and we're to start streaming, segue to the stream
-                                                        if (![app.id isEqualToString:currentApp.id]) {
-                                                            [self prepareToStreamApp:app];
-                                                            [self hideLoadingFrame: ^{
-                                                                [self performSegueWithIdentifier:@"createStreamFrame" sender:nil];
-                                                            }];
-                                                        }
-                                                        else {
-                                                            // Otherwise, just hide the loading icon
-                                                            [self hideLoadingFrame:nil];
-                                                        }
-                                                    });
-                                                }
-                                            });
-                                        }];
-                                        
-                                    }]];
+                                    [app.id isEqualToString:currentApp.id] ? @"Quit App" : @"Quit Running App and Start"
+                                                            style:UIAlertActionStyleDestructive
+                                                          handler:^(UIAlertAction* action){
+            Log(LOG_I, @"Quitting application: %@", currentApp.name);
+            BOOL startAfterQuit = ![app.id isEqualToString:currentApp.id];
+            [self quitRunningApp:currentApp then:^{
+                if (startAfterQuit) {
+                    [self prepareToStreamApp:app];
+                    [self performSegueWithIdentifier:@"createStreamFrame" sender:nil];
+                }
+                else {
+                    [self updateAppsForHost:app.host];
+                }
+            }];
+        }]];
     }
 
     if (currentApp == nil || ![app.id isEqualToString:currentApp.id] || app.hidden) {
@@ -1013,6 +1189,20 @@ static NSMutableSet* hostList;
     return section;
 }
 
+- (NSCollectionLayoutSection*) makeContinueSection {
+    NSCollectionLayoutSize* size =
+        [NSCollectionLayoutSize sizeWithWidthDimension:[NSCollectionLayoutDimension fractionalWidthDimension:1.0]
+                                       heightDimension:[NSCollectionLayoutDimension absoluteDimension:172]];
+
+    NSCollectionLayoutItem* item = [NSCollectionLayoutItem itemWithLayoutSize:size];
+    NSCollectionLayoutGroup* group = [NSCollectionLayoutGroup horizontalGroupWithLayoutSize:size subitems:@[item]];
+
+    NSCollectionLayoutSection* section = [NSCollectionLayoutSection sectionWithGroup:group];
+    section.contentInsets = NSDirectionalEdgeInsetsMake(0, 20, 0, 20);
+    section.boundarySupplementaryItems = @[[self makeSectionHeader]];
+    return section;
+}
+
 - (UICollectionViewLayout*) makeLayout {
     __weak MainFrameViewController* weakSelf = self;
 
@@ -1031,8 +1221,7 @@ static NSMutableSet* hostList;
             case MoonlightSectionHosts:
                 return [self makeHostsSection];
             case MoonlightSectionContinue:
-                // Added in a later commit; until then this section is empty.
-                return [self makeHostsSection];
+                return [self makeContinueSection];
             case MoonlightSectionGames:
                 return [self makeGamesSectionForEnvironment:env];
         }
@@ -1081,6 +1270,8 @@ static NSMutableSet* hostList;
     self.collectionView.alwaysBounceVertical = YES;
     [self.collectionView registerClass:[MoonlightTileCell class]
             forCellWithReuseIdentifier:@"tile"];
+    [self.collectionView registerClass:[MoonlightHeroCell class]
+            forCellWithReuseIdentifier:@"hero"];
     [self.collectionView registerClass:[MoonlightHeaderView class]
             forSupplementaryViewOfKind:UICollectionElementKindSectionHeader
                    withReuseIdentifier:@"header"];
@@ -1627,7 +1818,7 @@ static NSMutableSet* hostList;
             // Every host, plus the trailing "Add PC" tile.
             return _sortedHostList.count + 1;
         case MoonlightSectionContinue:
-            return 0;   // populated in a later commit
+            return 1;
         case MoonlightSectionGames:
             return _sortedAppList.count;
     }
@@ -1636,6 +1827,43 @@ static NSMutableSet* hostList;
 
 // ponytail: rebuilds the tile view on every dequeue instead of reconfiguring; add a -configureForHost: reuse path if a large host list ever scrolls badly.
 - (UICollectionViewCell*) collectionView:(UICollectionView*)collectionView cellForItemAtIndexPath:(NSIndexPath*)indexPath {
+    if ([self sectionAtIndex:indexPath.section] == MoonlightSectionContinue) {
+        TemporaryApp* running = [self findRunningApp:_selectedHost];
+        MoonlightHeroCell* hero = [collectionView dequeueReusableCellWithReuseIdentifier:@"hero" forIndexPath:indexPath];
+
+        if (running == nil) {
+            // The host's currentGame is updated by a background discovery poll
+            // (DiscoveryWorker) independently of rebuildSections, which decided
+            // this section should exist. If the game quit from another device
+            // in between, don't hand a nil app to the hero cell's actions; the
+            // next reload (triggered by whatever changed currentGame) will drop
+            // this section anyway.
+            hero.onResume = nil;
+            hero.onQuit = nil;
+            return hero;
+        }
+
+        [hero configureWithApp:running
+                      hostName:_selectedHost.name
+                       artwork:[_boxArtCache objectForKey:running]];
+
+        __weak MainFrameViewController* weakSelf = self;
+        hero.onResume = ^{
+            MainFrameViewController* strongSelf = weakSelf;
+            [strongSelf->_appManager stopRetrieving];
+            [strongSelf prepareToStreamApp:running];
+            [strongSelf performSegueWithIdentifier:@"createStreamFrame" sender:nil];
+        };
+        hero.onQuit = ^{
+            MainFrameViewController* strongSelf = weakSelf;
+            [strongSelf quitRunningApp:running then:^{
+                [strongSelf updateAppsForHost:strongSelf->_selectedHost];
+            }];
+        };
+
+        return hero;
+    }
+
     MoonlightTileCell* cell = [collectionView dequeueReusableCellWithReuseIdentifier:@"tile" forIndexPath:indexPath];
 
     if ([self sectionAtIndex:indexPath.section] == MoonlightSectionHosts) {
@@ -1673,9 +1901,15 @@ static NSMutableSet* hostList;
         case MoonlightSectionContinue:
             header.titleLabel.text = @"Continue";
             break;
-        case MoonlightSectionGames:
+        case MoonlightSectionGames: {
             header.titleLabel.text = @"Games";
+            header.accessoryButton.hidden = NO;
+            [header.accessoryButton setImage:[UIImage systemImageNamed:@"ellipsis.circle"] forState:UIControlStateNormal];
+            [header.accessoryButton setTitle:nil forState:UIControlStateNormal];
+            header.accessoryButton.menu = [self gamesMenu];
+            header.accessoryButton.showsMenuAsPrimaryAction = YES;
             break;
+        }
     }
 
     return header;
