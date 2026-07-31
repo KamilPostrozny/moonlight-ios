@@ -109,6 +109,14 @@ void DrStop(void)
     }
 }
 
+-(NSString*) getFramePacingStatsText
+{
+    // The renderer keeps this state unsynchronized because it's only touched
+    // from the display link callback, so only read it from the main thread.
+    NSAssert([NSThread isMainThread], @"Frame pacing stats must be read on the main thread");
+    return renderer != nil ? [renderer getFramePacingStatsText] : @"Frame pacing: N/A";
+}
+
 int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit)
 {
     int offset = 0;

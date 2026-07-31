@@ -9,6 +9,8 @@
 #import "VideoDecoderRenderer.h"
 #import "StreamView.h"
 
+#include <math.h>
+
 #include <libavcodec/avcodec.h>
 #include <libavcodec/cbs.h>
 #include <libavcodec/cbs_av1.h>
@@ -18,6 +20,30 @@
 // Private libavformat API for writing the AV1 Codec Configuration Box
 extern int ff_isom_write_av1c(AVIOContext *pb, const uint8_t *buf, int size,
                               int write_seq_header);
+
+// Refresh matching only has something to work with when the panel can run
+// meaningfully faster than the stream, and we never ask for more than one
+// extra presentation slot per source frame.
+#define REFRESH_MATCH_MIN_HEADROOM 1.5f
+#define REFRESH_MATCH_OVERSAMPLE 2.0f
+
+// EMA weights for the two things we estimate from the frame stream. The source
+// cadence is a property of the host and moves slowly, so it's smoothed hard.
+// The arrival jitter has to react fast enough to engage oversampling while the
+// network is actually misbehaving.
+#define SOURCE_INTERVAL_EMA_WEIGHT 0.05
+#define ARRIVAL_JITTER_EMA_WEIGHT 0.10
+
+// Arrival jitter thresholds, as a fraction of one source frame period. Above
+// the engage threshold, arrivals are uneven enough that the extra presentation
+// slots are worth the power they cost; below the release threshold we settle
+// back onto the source cadence. The gap between them is hysteresis to keep the
+// panel from oscillating between the two.
+#define JITTER_ENGAGE_THRESHOLD 0.20
+#define JITTER_RELEASE_THRESHOLD 0.10
+
+// Don't retune the display link more than twice a second.
+#define REFRESH_RATE_UPDATE_INTERVAL 0.5
 
 @implementation VideoDecoderRenderer {
     StreamView* _view;
@@ -35,6 +61,22 @@ extern int ff_isom_write_av1c(AVIOContext *pb, const uint8_t *buf, int size,
     
     CADisplayLink* _displayLink;
     BOOL framePacing;
+
+    // Client-side refresh matching state. All of this is only touched from the
+    // display link callback and the stats overlay, both of which run on the
+    // main thread, so it needs no locking.
+    BOOL _refreshMatching;
+    BOOL _oversampling;
+    BOOL _haveTimingSample;
+    float _panelMaxRefreshRate;
+    float _requestedRefreshRate;
+    double _observedRefreshRate;
+    double _sourceFrameIntervalMs;
+    double _arrivalJitterMs;
+    CFTimeInterval _lastRefreshRateUpdate;
+    int _lastSampledFrameNumber;
+    unsigned int _lastSampledPresentationTimeMs;
+    uint64_t _lastSampledEnqueueTimeMs;
 }
 
 - (void)reinitializeDisplayLayer
@@ -102,13 +144,110 @@ extern int ff_isom_write_av1c(AVIOContext *pb, const uint8_t *buf, int size,
 - (void)start
 {
     _displayLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(displayLinkCallback:)];
+
+    // DrDecoderSetup() always runs before DrStart(), but don't let a bogus
+    // redraw rate turn into a division by zero below.
+    if (self->frameRate <= 0) {
+        self->frameRate = 60;
+    }
+
+    UIScreen* screen = _view.window.screen ?: [UIScreen mainScreen];
+    _panelMaxRefreshRate = screen.maximumFramesPerSecond;
+    _observedRefreshRate = self->frameRate;
+    _sourceFrameIntervalMs = 1000.0 / self->frameRate;
+    _arrivalJitterMs = 0;
+    _haveTimingSample = NO;
+    _lastRefreshRateUpdate = 0;
+    _requestedRefreshRate = 0;
+    _oversampling = NO;
+
     if (@available(iOS 15.0, tvOS 15.0, *)) {
-        _displayLink.preferredFrameRateRange = CAFrameRateRangeMake(self->frameRate, self->frameRate, self->frameRate);
+        // On a ProMotion (LTPO) panel we can ask CoreAnimation for a frame rate
+        // *range* rather than pinning the link to the stream frame rate, and
+        // retune it while the stream runs. Two things fall out of that: the
+        // panel can settle onto the cadence the host is actually capturing at
+        // (a scene rendering at 45 FPS doesn't have to be shown on a rigid 60
+        // Hz cadence), and when arrivals get uneven we can oversample so a late
+        // frame lands on the next presentation slot half a period away instead
+        // of waiting out a whole one.
+        //
+        // iOS doesn't hand apps the scanout control a desktop compositor has,
+        // so this is jitter absorption inside Apple's frame pacing abstraction,
+        // not true panel-level VRR. Expect it to smooth out judder, not to cut
+        // latency.
+        _refreshMatching = framePacing && _panelMaxRefreshRate >= self->frameRate * REFRESH_MATCH_MIN_HEADROOM;
+
+        if (_refreshMatching) {
+            [self updateDisplayLinkRefreshRate];
+        }
+        else {
+            _displayLink.preferredFrameRateRange = CAFrameRateRangeMake(self->frameRate, self->frameRate, self->frameRate);
+        }
     }
     else {
         _displayLink.preferredFramesPerSecond = self->frameRate;
     }
+
     [_displayLink addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSDefaultRunLoopMode];
+}
+
+// Feed one dequeued frame into the source cadence and arrival jitter estimates.
+//
+// presentationTimeMs is the host's capture timestamp and enqueueTimeMs is when
+// the frame finished arriving here, so the delta between consecutive capture
+// timestamps is the cadence we want to match, and the difference between the
+// two deltas is the cadence error the network introduced. Neither is quantized
+// by the display link, which is what makes them usable as pacing inputs.
+- (void)sampleFrameTiming:(PDECODE_UNIT)du
+{
+    // Only consecutive frames say anything about cadence. A gap means the
+    // network dropped a frame and both deltas cover more than one frame period.
+    if (_haveTimingSample && du->frameNumber == _lastSampledFrameNumber + 1) {
+        double sourceDeltaMs = (double)du->presentationTimeMs - (double)_lastSampledPresentationTimeMs;
+        double arrivalDeltaMs = (double)du->enqueueTimeMs - (double)_lastSampledEnqueueTimeMs;
+
+        // Reject nonsense: hosts that don't populate presentation timestamps
+        // leave the delta at zero, and a long stall isn't a cadence change.
+        if (sourceDeltaMs > 0 && sourceDeltaMs < (1000.0 / self->frameRate) * 4) {
+            _sourceFrameIntervalMs += (sourceDeltaMs - _sourceFrameIntervalMs) * SOURCE_INTERVAL_EMA_WEIGHT;
+            _arrivalJitterMs += (fabs(arrivalDeltaMs - sourceDeltaMs) - _arrivalJitterMs) * ARRIVAL_JITTER_EMA_WEIGHT;
+        }
+    }
+
+    _lastSampledFrameNumber = du->frameNumber;
+    _lastSampledPresentationTimeMs = du->presentationTimeMs;
+    _lastSampledEnqueueTimeMs = du->enqueueTimeMs;
+    _haveTimingSample = YES;
+}
+
+- (void)updateDisplayLinkRefreshRate API_AVAILABLE(ios(15.0), tvos(15.0))
+{
+    // The host can't produce frames faster than the rate we negotiated, and a
+    // bad estimate shouldn't strand us at a rate the stream immediately
+    // outruns, so keep the estimate inside sane bounds.
+    float sourceRate = (float)(1000.0 / _sourceFrameIntervalMs);
+    sourceRate = MIN(MAX(sourceRate, self->frameRate / 2.0f), (float)self->frameRate);
+
+    double jitterRatio = _arrivalJitterMs / _sourceFrameIntervalMs;
+    _oversampling = jitterRatio > (_oversampling ? JITTER_RELEASE_THRESHOLD : JITTER_ENGAGE_THRESHOLD);
+
+    // Matched: one presentation slot per source frame, which lets an LTPO panel
+    // drop to the cadence the host is really rendering at.
+    // Oversampled: extra slots, so a frame that shows up late gets presented at
+    // the next one rather than waiting out a full source frame period.
+    float preferredRate = MIN(_oversampling ? sourceRate * REFRESH_MATCH_OVERSAMPLE : sourceRate,
+                              _panelMaxRefreshRate);
+
+    // Changing the range churns the display pipeline, so ignore sub-1 Hz drift.
+    if (fabsf(preferredRate - _requestedRefreshRate) < 1.0f) {
+        return;
+    }
+    _requestedRefreshRate = preferredRate;
+
+    // Hand the system the whole usable range and let it coalesce our
+    // presentation with everything else on screen. The floor is the source
+    // cadence so we can never be starved of slots by the panel idling down.
+    _displayLink.preferredFrameRateRange = CAFrameRateRangeMake(sourceRate, _panelMaxRefreshRate, preferredRate);
 }
 
 // TODO: Refactor this
@@ -118,26 +257,69 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit);
 {
     VIDEO_FRAME_HANDLE handle;
     PDECODE_UNIT du;
-    
+
+    // Calculate the actual display refresh rate. Battery saver, accessibility
+    // settings, or device thermals can cause the actual refresh rate of the
+    // display to drop below the physical maximum, and when we've asked for a
+    // range the system is free to pick something other than what we requested.
+    CFTimeInterval tickInterval = sender.targetTimestamp - sender.timestamp;
+    if (tickInterval > 0) {
+        _observedRefreshRate = 1 / tickInterval;
+    }
+
+    // Only pace frames if the display refresh rate is >= 90% of our stream frame rate.
+    BOOL paceFrames = framePacing && _observedRefreshRate >= frameRate * 0.9f;
+
+    // How much of a backlog we're willing to leave queued, measured in
+    // presentation slots rather than frames: one source frame period's worth.
+    // At a 1:1 refresh rate that's the single pending frame we've always kept
+    // to smooth out gaps due to network jitter, at the cost of 1 frame of
+    // latency. When we're oversampling it also covers the extra slots, so a
+    // burst gets worked off one frame per tick instead of collapsing several
+    // frames into a single presentation: the same latency budget in
+    // milliseconds, but more of the frames actually make it to the panel.
+    int maxBacklog = MAX(1, (int)lround(_observedRefreshRate / frameRate));
+
     while (LiPollNextVideoFrame(&handle, &du)) {
+        if (_refreshMatching) {
+            // Must happen before LiCompleteVideoFrame() releases the frame
+            [self sampleFrameTiming:du];
+        }
+
         LiCompleteVideoFrame(handle, DrSubmitDecodeUnit(du));
-        
-        if (framePacing) {
-            // Calculate the actual display refresh rate
-            double displayRefreshRate = 1 / (_displayLink.targetTimestamp - _displayLink.timestamp);
-            
-            // Only pace frames if the display refresh rate is >= 90% of our stream frame rate.
-            // Battery saver, accessibility settings, or device thermals can cause the actual
-            // refresh rate of the display to drop below the physical maximum.
-            if (displayRefreshRate >= frameRate * 0.9f) {
-                // Keep one pending frame to smooth out gaps due to
-                // network jitter at the cost of 1 frame of latency
-                if (LiGetPendingVideoFrames() == 1) {
-                    break;
-                }
+
+        if (paceFrames && LiGetPendingVideoFrames() <= maxBacklog) {
+            break;
+        }
+    }
+
+    if (_refreshMatching) {
+        CFTimeInterval now = CACurrentMediaTime();
+        if (now - _lastRefreshRateUpdate >= REFRESH_RATE_UPDATE_INTERVAL) {
+            _lastRefreshRateUpdate = now;
+
+            if (@available(iOS 15.0, tvOS 15.0, *)) {
+                [self updateDisplayLinkRefreshRate];
             }
         }
     }
+}
+
+- (NSString*)getFramePacingStatsText
+{
+    if (!framePacing) {
+        return @"Frame pacing: off (lowest latency)";
+    }
+
+    if (!_refreshMatching) {
+        return [NSString stringWithFormat:@"Frame pacing: fixed %d Hz", self->frameRate];
+    }
+
+    return [NSString stringWithFormat:@"Frame pacing: refresh matching, %@ (display %.0f Hz, source %.1f FPS, arrival jitter %.1f ms)",
+            _oversampling ? @"oversampled" : @"matched",
+            _observedRefreshRate,
+            1000.0 / _sourceFrameIntervalMs,
+            _arrivalJitterMs];
 }
 
 - (void)stop
