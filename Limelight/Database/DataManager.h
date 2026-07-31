@@ -25,6 +25,7 @@
                        audioOnPC:(BOOL)audioOnPC
                   preferredCodec:(uint32_t)preferredCodec
                   useFramePacing:(BOOL)useFramePacing
+                       enableVrr:(BOOL)enableVrr
                        enableHdr:(BOOL)enableHdr
                   btMouseSupport:(BOOL)btMouseSupport
                absoluteTouchMode:(BOOL)absoluteTouchMode

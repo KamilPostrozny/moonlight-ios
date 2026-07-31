@@ -26,6 +26,7 @@
     CODEC_PREF_AV1,
 } preferredCodec;
 @property (nonatomic) BOOL useFramePacing;
+@property (nonatomic) BOOL enableVrr;
 @property (nonatomic) BOOL multiController;
 @property (nonatomic) BOOL swapABXYButtons;
 @property (nonatomic) BOOL playAudioOnPC;

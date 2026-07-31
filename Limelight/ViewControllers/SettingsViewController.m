@@ -57,7 +57,7 @@
     BOOL _swapABXYButtons;
     BOOL _audioOnPC;
     BOOL _btMouseSupport;
-    BOOL _useFramePacing;
+    NSInteger _framePacingMode;
     BOOL _absoluteTouchMode;
     BOOL _statsOverlay;
     BOOL _enableHdr;
@@ -208,7 +208,7 @@ BOOL isCustomResolution(CGSize res) {
     _swapABXYButtons = currentSettings.swapABXYButtons;
     _audioOnPC = currentSettings.playAudioOnPC;
     _btMouseSupport = currentSettings.btMouseSupport;
-    _useFramePacing = currentSettings.useFramePacing;
+    _framePacingMode = currentSettings.enableVrr ? 2 : (currentSettings.useFramePacing ? 1 : 0);
     _absoluteTouchMode = currentSettings.absoluteTouchMode;
     _statsOverlay = currentSettings.statsOverlay;
     _enableHdr = currentSettings.enableHdr && _hdrSupported;
@@ -488,16 +488,24 @@ BOOL isCustomResolution(CGSize res) {
     // On-screen controls are meaningless when touch acts as a touchscreen.
     _onscreenControlsButton.enabled = !_absoluteTouchMode;
 
-    NSArray<NSString*>* pacingTitles = @[@"Lowest Latency", @"Smoothest Video"];
-    _framePacingButton = [self menuButtonWithTitle:pacingTitles[_useFramePacing ? 1 : 0]
+    // VRR needs a panel that can outrun the stream, so only offer it where it
+    // can actually engage. A stored mode we can't offer falls back to the first.
+    NSMutableArray<NSString*>* pacingTitles = [@[@"Lowest Latency", @"Smoothest Video"] mutableCopy];
+    if (_support120Fps) {
+        [pacingTitles addObject:@"Lowest Latency + VRR"];
+    }
+    if (_framePacingMode >= (NSInteger)pacingTitles.count) {
+        _framePacingMode = 0;
+    }
+    _framePacingButton = [self menuButtonWithTitle:pacingTitles[_framePacingMode]
                                               menu:[self indexMenuWithTitles:pacingTitles
-                                                                     current:(_useFramePacing ? 1 : 0)
+                                                                     current:_framePacingMode
                                                                       setter:^(NSInteger index) {
         typeof(self) strongSelf = weakSelf;
         if (strongSelf == nil) {
             return;
         }
-        strongSelf->_useFramePacing = (index == 1);
+        strongSelf->_framePacingMode = index;
     }]];
 
     _touchModeControl = [[UISegmentedControl alloc] initWithItems:@[@"Touchpad", @"Touchscreen"]];
@@ -772,7 +780,8 @@ BOOL isCustomResolution(CGSize res) {
                      swapABXYButtons:_swapABXYButtons
                            audioOnPC:_audioOnPC
                       preferredCodec:_codecPref
-                      useFramePacing:_useFramePacing
+                      useFramePacing:_framePacingMode == 1
+                           enableVrr:_framePacingMode == 2
                            enableHdr:_enableHdr
                       btMouseSupport:_btMouseSupport
                    absoluteTouchMode:_absoluteTouchMode

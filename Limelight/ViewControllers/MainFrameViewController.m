@@ -936,7 +936,12 @@ static NSMutableSet* hostList;
     _streamConfig.bitRate = [streamSettings.bitrate intValue];
     _streamConfig.optimizeGameSettings = streamSettings.optimizeGames;
     _streamConfig.playAudioOnPC = streamSettings.playAudioOnPC;
-    _streamConfig.useFramePacing = streamSettings.useFramePacing;
+    if (streamSettings.enableVrr) {
+        _streamConfig.framePacingMode = FramePacingModeLowestLatencyVrr;
+    }
+    else {
+        _streamConfig.framePacingMode = streamSettings.useFramePacing ? FramePacingModeSmoothestVideo : FramePacingModeLowestLatency;
+    }
     _streamConfig.swapABXYButtons = streamSettings.swapABXYButtons;
     
     // multiController must be set before calling getConnectedGamepadMask

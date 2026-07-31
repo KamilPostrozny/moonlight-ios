@@ -64,6 +64,7 @@
                        audioOnPC:(BOOL)audioOnPC
                   preferredCodec:(uint32_t)preferredCodec
                   useFramePacing:(BOOL)useFramePacing
+                       enableVrr:(BOOL)enableVrr
                        enableHdr:(BOOL)enableHdr
                   btMouseSupport:(BOOL)btMouseSupport
                absoluteTouchMode:(BOOL)absoluteTouchMode
@@ -83,6 +84,7 @@
         settingsToSave.playAudioOnPC = audioOnPC;
         settingsToSave.preferredCodec = preferredCodec;
         settingsToSave.useFramePacing = useFramePacing;
+        settingsToSave.enableVrr = enableVrr;
         settingsToSave.enableHdr = enableHdr;
         settingsToSave.btMouseSupport = btMouseSupport;
         settingsToSave.absoluteTouchMode = absoluteTouchMode;

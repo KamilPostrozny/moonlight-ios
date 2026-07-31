@@ -9,12 +9,13 @@
 @import AVFoundation;
 
 #import "ConnectionCallbacks.h"
+#import "StreamConfiguration.h"
 
 #include "Limelight.h"
 
 @interface VideoDecoderRenderer : NSObject
 
-- (id)initWithView:(UIView*)view callbacks:(id<ConnectionCallbacks>)callbacks streamAspectRatio:(float)aspectRatio useFramePacing:(BOOL)useFramePacing;
+- (id)initWithView:(UIView*)view callbacks:(id<ConnectionCallbacks>)callbacks streamAspectRatio:(float)aspectRatio framePacingMode:(FramePacingMode)framePacingMode;
 
 - (void)setupWithVideoFormat:(int)videoFormat width:(int)videoWidth height:(int)videoHeight frameRate:(int)frameRate;
 - (void)start;

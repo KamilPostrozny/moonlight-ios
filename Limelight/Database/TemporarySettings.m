@@ -37,7 +37,11 @@
     self.audioConfig = [NSNumber numberWithInteger:[[NSUserDefaults standardUserDefaults] integerForKey:@"audioConfig"]];
     assert([self.audioConfig intValue] != 0);
     self.preferredCodec = (typeof(self.preferredCodec))[[NSUserDefaults standardUserDefaults] integerForKey:@"preferredCodec"];
-    self.useFramePacing = [[NSUserDefaults standardUserDefaults] integerForKey:@"useFramePacing"] != 0;
+    // tvOS stores the three pacing modes as one integer in Root.plist rather
+    // than the two booleans the Core Data model uses.
+    NSInteger framePacingPreference = [[NSUserDefaults standardUserDefaults] integerForKey:@"useFramePacing"];
+    self.useFramePacing = framePacingPreference == 1;
+    self.enableVrr = framePacingPreference == 2;
     self.playAudioOnPC = [[NSUserDefaults standardUserDefaults] boolForKey:@"audioOnPC"];
     self.enableHdr = [[NSUserDefaults standardUserDefaults] boolForKey:@"enableHdr"];
     self.optimizeGames = [[NSUserDefaults standardUserDefaults] boolForKey:@"optimizeGames"];
@@ -76,6 +80,7 @@
     self.audioConfig = settings.audioConfig;
     self.preferredCodec = settings.preferredCodec;
     self.useFramePacing = settings.useFramePacing;
+    self.enableVrr = settings.enableVrr;
     self.playAudioOnPC = settings.playAudioOnPC;
     self.enableHdr = settings.enableHdr;
     self.optimizeGames = settings.optimizeGames;

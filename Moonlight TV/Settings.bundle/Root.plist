@@ -221,11 +221,13 @@
 			<array>
 				<string>0</string>
 				<string>1</string>
+				<string>2</string>
 			</array>
 			<key>Titles</key>
 			<array>
 				<string>Lowest Latency</string>
 				<string>Smoothest Video</string>
+				<string>Lowest Latency + VRR</string>
 			</array>
 		</dict>
 		<dict>
