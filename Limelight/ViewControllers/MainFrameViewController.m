@@ -6,6 +6,7 @@
 //
 
 @import ImageIO;
+@import QuartzCore;
 
 #import "MainFrameViewController.h"
 #import "CryptoManager.h"
@@ -22,7 +23,6 @@
 #import "ServerInfoResponse.h"
 #import "StreamFrameViewController.h"
 #import "LoadingFrameViewController.h"
-#import "ComputerScrollView.h"
 #import "TemporaryApp.h"
 #import "IdManager.h"
 #import "ConnectionHelper.h"
@@ -37,6 +37,234 @@
 
 #include <Limelight.h>
 
+#if !TARGET_OS_TV
+
+typedef NS_ENUM(NSInteger, MoonlightSection) {
+    MoonlightSectionHosts,
+    MoonlightSectionContinue,
+    MoonlightSectionGames,
+};
+
+// Hosts a single UIComputerView/UIAppView pinned to the cell's bounds. Those
+// classes own their own drawing and callbacks; the cell only supplies a frame.
+@interface MoonlightTileCell : UICollectionViewCell
+- (void) setTileView:(UIView*)tile;
+@end
+
+@implementation MoonlightTileCell
+
+- (void) setTileView:(UIView*)tile {
+    [self clearTile];
+    tile.frame = self.contentView.bounds;
+    tile.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    [self.contentView addSubview:tile];
+}
+
+- (void) clearTile {
+    for (UIView* subview in [self.contentView.subviews copy]) {
+        [subview removeFromSuperview];
+    }
+}
+
+- (void) prepareForReuse {
+    [super prepareForReuse];
+    [self clearTile];
+}
+
+@end
+
+// Section header: a title plus an optional trailing button that shows a menu.
+@interface MoonlightHeaderView : UICollectionReusableView
+@property (nonatomic, readonly) UILabel* titleLabel;
+@property (nonatomic, readonly) UIButton* accessoryButton;
+@end
+
+@implementation MoonlightHeaderView
+
+- (instancetype) initWithFrame:(CGRect)frame {
+    self = [super initWithFrame:frame];
+
+    _titleLabel = [[UILabel alloc] init];
+    _titleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleTitle3];
+    _titleLabel.adjustsFontForContentSizeCategory = YES;
+    _titleLabel.textColor = [UIColor labelColor];
+
+    _accessoryButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    _accessoryButton.tintColor = [MoonlightTheme accentColor];
+    [_accessoryButton setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+
+    UIStackView* row = [[UIStackView alloc] initWithArrangedSubviews:@[_titleLabel, _accessoryButton]];
+    row.axis = UILayoutConstraintAxisHorizontal;
+    row.alignment = UIStackViewAlignmentCenter;
+    row.spacing = 8;
+    row.translatesAutoresizingMaskIntoConstraints = NO;
+    [self addSubview:row];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [row.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:20],
+        [row.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-20],
+        [row.topAnchor constraintEqualToAnchor:self.topAnchor constant:8],
+        [row.bottomAnchor constraintEqualToAnchor:self.bottomAnchor constant:-8],
+    ]];
+
+    return self;
+}
+
+@end
+
+// The "Continue" cell: the game currently running on the selected host, with
+// its two actions surfaced instead of buried in a long-press action sheet.
+@interface MoonlightHeroCell : UICollectionViewCell
+@property (nonatomic, copy) void (^onResume)(void);
+@property (nonatomic, copy) void (^onQuit)(void);
+- (void) configureWithApp:(TemporaryApp*)app hostName:(NSString*)hostName artwork:(UIImage*)artwork;
+@end
+
+@implementation MoonlightHeroCell {
+    UIVisualEffectView* _glass;
+    UIImageView* _artView;
+    UILabel* _titleLabel;
+    UILabel* _subtitleLabel;
+    UIButton* _resumeButton;
+    UIButton* _quitButton;
+}
+
+- (instancetype) initWithFrame:(CGRect)frame {
+    self = [super initWithFrame:frame];
+
+    _glass = [MoonlightTheme glassViewWithTint:nil];
+    _glass.layer.cornerRadius = [MoonlightTheme cardCornerRadius];
+    _glass.layer.cornerCurve = kCACornerCurveContinuous;
+    _glass.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.contentView addSubview:_glass];
+
+    _artView = [[UIImageView alloc] init];
+    _artView.contentMode = UIViewContentModeScaleAspectFill;
+    _artView.clipsToBounds = YES;
+    _artView.backgroundColor = [UIColor secondarySystemBackgroundColor];
+    _artView.layer.cornerRadius = [MoonlightTheme tileCornerRadius];
+    _artView.layer.cornerCurve = kCACornerCurveContinuous;
+    _artView.translatesAutoresizingMaskIntoConstraints = NO;
+
+    _titleLabel = [[UILabel alloc] init];
+    _titleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleTitle3];
+    _titleLabel.textColor = [UIColor labelColor];
+    _titleLabel.numberOfLines = 2;
+
+    _subtitleLabel = [[UILabel alloc] init];
+    _subtitleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
+    _subtitleLabel.textColor = [UIColor secondaryLabelColor];
+
+    _resumeButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    _resumeButton.configuration = [MoonlightTheme glassButtonWithTitle:@"Resume"
+                                                                 image:[UIImage systemImageNamed:@"play.fill"]
+                                                             prominent:YES];
+    [_resumeButton addTarget:self action:@selector(resumeTapped) forControlEvents:UIControlEventPrimaryActionTriggered];
+
+    _quitButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    _quitButton.configuration = [MoonlightTheme glassButtonWithTitle:@"Quit"
+                                                               image:[UIImage systemImageNamed:@"stop.fill"]
+                                                           prominent:NO];
+    [_quitButton addTarget:self action:@selector(quitTapped) forControlEvents:UIControlEventPrimaryActionTriggered];
+
+    // Keep the button titles from hyphenating ("Re-sume") when the row gets
+    // narrow in portrait; let the artwork give up space instead (see the
+    // width constraint's priority below).
+    [_resumeButton setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+    [_quitButton setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+
+    UIStackView* buttons = [[UIStackView alloc] initWithArrangedSubviews:@[_resumeButton, _quitButton]];
+    buttons.axis = UILayoutConstraintAxisHorizontal;
+    buttons.spacing = 10;
+    buttons.distribution = UIStackViewDistributionFill;
+
+    UIView* spacer = [[UIView alloc] init];
+    [spacer setContentHuggingPriority:UILayoutPriorityDefaultLow forAxis:UILayoutConstraintAxisVertical];
+
+    UIStackView* textStack = [[UIStackView alloc] initWithArrangedSubviews:@[_titleLabel, _subtitleLabel, spacer, buttons]];
+    textStack.axis = UILayoutConstraintAxisVertical;
+    textStack.alignment = UIStackViewAlignmentLeading;
+    textStack.spacing = 4;
+    textStack.translatesAutoresizingMaskIntoConstraints = NO;
+
+    [self.contentView addSubview:_artView];
+    [self.contentView addSubview:textStack];
+
+    // Lower priority than the buttons' compression resistance above, so when
+    // the row is too narrow for both, the artwork shrinks instead of the
+    // button titles hyphenating.
+    NSLayoutConstraint* artWidthConstraint = [_artView.widthAnchor constraintEqualToAnchor:_artView.heightAnchor multiplier:3.0f / 4.0f];
+    artWidthConstraint.priority = UILayoutPriorityDefaultHigh;
+
+    [NSLayoutConstraint activateConstraints:@[
+        [_glass.topAnchor constraintEqualToAnchor:self.contentView.topAnchor],
+        [_glass.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor],
+        [_glass.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor],
+        [_glass.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor],
+
+        [_artView.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:16],
+        [_artView.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor constant:-16],
+        [_artView.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:16],
+        artWidthConstraint,
+
+        [textStack.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:16],
+        [textStack.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor constant:-16],
+        [textStack.leadingAnchor constraintEqualToAnchor:_artView.trailingAnchor constant:16],
+        [textStack.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-16],
+    ]];
+
+    return self;
+}
+
+- (void) configureWithApp:(TemporaryApp*)app hostName:(NSString*)hostName artwork:(UIImage*)artwork {
+    _titleLabel.text = app.name;
+    _subtitleLabel.text = [NSString stringWithFormat:@"Running on %@", hostName];
+    _artView.image = artwork;
+}
+
+- (void) resumeTapped {
+    if (self.onResume) {
+        self.onResume();
+    }
+}
+
+- (void) quitTapped {
+    if (self.onQuit) {
+        self.onQuit();
+    }
+}
+
+@end
+
+#endif
+
+// A single host action, described once and rendered as either a UIAction
+// (for the real context menu) or a UIAlertAction (for the action-sheet
+// fallback used for offline hosts and, historically, everywhere else).
+// UIAction's handler is write-only from the outside — there is no public way
+// to read a UIAction's handler back out once it's built — so a plain
+// NSArray<UIAction*> can't be shared between the two presentations. This
+// descriptor is the shared source of truth instead; hostActionsForHost:
+// builds this list exactly once.
+@interface MoonlightHostAction : NSObject
+@property (nonatomic, copy, readonly) NSString* title;
+@property (nonatomic, readonly, nullable) UIImage* image;
+@property (nonatomic, readonly) BOOL destructive;
+@property (nonatomic, copy, readonly) void (^handler)(void);
++ (instancetype) actionWithTitle:(NSString*)title image:(nullable UIImage*)image destructive:(BOOL)destructive handler:(void (^)(void))handler;
+@end
+
+@implementation MoonlightHostAction
++ (instancetype) actionWithTitle:(NSString*)title image:(UIImage*)image destructive:(BOOL)destructive handler:(void (^)(void))handler {
+    MoonlightHostAction* action = [[MoonlightHostAction alloc] init];
+    action->_title = [title copy];
+    action->_image = image;
+    action->_destructive = destructive;
+    action->_handler = [handler copy];
+    return action;
+}
+@end
+
 @implementation MainFrameViewController {
     NSOperationQueue* _opQueue;
     TemporaryHost* _selectedHost;
@@ -48,12 +276,17 @@
     StreamConfiguration* _streamConfig;
     UIAlertController* _pairAlert;
     LoadingFrameViewController* _loadingFrame;
-    UIScrollView* hostScrollView;
-    FrontViewPosition currentPosition;
+    NSArray<NSNumber*>* _sections;
+    NSArray<TemporaryHost*>* _sortedHostList;
     NSArray* _sortedAppList;
+    TemporaryApp* _continueApp;
     NSCache* _boxArtCache;
     bool _background;
     NSString* _deepLinkAppQuery;
+#if !TARGET_OS_TV
+    NSCache* _ambientCache;
+    CAGradientLayer* _ambientLayer;
+#endif
 #if TARGET_OS_TV
     UITapGestureRecognizer* _menuRecognizer;
 #endif
@@ -117,28 +350,8 @@ static NSMutableSet* hostList;
     });
 }
 
-- (void)disableUpButton {
-#if !TARGET_OS_TV
-    [self->_upButton setTitle:nil];
-#endif
-}
-
-- (void)enableUpButton {
-#if !TARGET_OS_TV
-    [self->_upButton setTitle:@"Select New Host"];
-#endif
-}
-
 - (void)updateTitle {
-    if (_selectedHost != nil) {
-        self.title = _selectedHost.name;
-    }
-    else if ([hostList count] == 0) {
-        self.title = @"Searching for PCs on your network...";
-    }
-    else {
-        self.title = @"Select Host";
-    }
+    self.title = @"Moonlight";
 }
 
 - (void)alreadyPaired {
@@ -303,6 +516,7 @@ static NSMutableSet* hostList;
     _showHiddenApps = NO;
     _selectedHost = nil;
     _sortedAppList = nil;
+    _continueApp = nil;
 
     // Abandon any pending deep link. We get here when connecting to the host
     // failed, or when the user navigated back, so it must not fire later
@@ -310,10 +524,12 @@ static NSMutableSet* hostList;
     _deepLinkAppQuery = nil;
     
     [self updateTitle];
-    [self disableUpButton];
-    
+
+#if !TARGET_OS_TV
+    [self reloadEverything];
+#else
     [self.collectionView reloadData];
-    [self.view addSubview:hostScrollView];
+#endif
 }
 
 - (void) receivedAssetForApp:(TemporaryApp*)app {
@@ -346,9 +562,13 @@ static NSMutableSet* hostList;
     }
     
     Log(LOG_D, @"Clicked host: %@", host.name);
+    if (host != _selectedHost) {
+        // The hidden-apps filter is per-PC. Switching hosts no longer routes
+        // through showHostSelectionView, so reset it here too.
+        _showHiddenApps = NO;
+    }
     _selectedHost = host;
     [self updateTitle];
-    [self enableUpButton];
     [self disableNavigation];
     
 #if TARGET_OS_TV
@@ -455,35 +675,21 @@ static NSMutableSet* hostList;
     return topController;
 }
 
-- (void)hostLongClicked:(TemporaryHost *)host view:(UIView *)view {
-    Log(LOG_D, @"Long clicked host: %@", host.name);
-    NSString* message;
-    
-    switch (host.state) {
-        case StateOffline:
-            message = @"Offline";
-            break;
-            
-        case StateOnline:
-            if (host.pairState == PairStatePaired) {
-                message = @"Online - Paired";
-            }
-            else {
-                message = @"Online - Not Paired";
-            }
-            break;
-        
-        case StateUnknown:
-            message = @"Connecting";
-            break;
-            
-        default:
-            break;
-    }
-    
-    UIAlertController* longClickAlert = [UIAlertController alertControllerWithTitle:host.name message:message preferredStyle:UIAlertControllerStyleActionSheet];
+// The host's actions, defined once and shared by both presentations:
+// hostLongClicked:view: (action sheet, used for offline hosts and as the
+// fallback UI) and collectionView:contextMenuConfigurationForItemAtIndexPath:point:
+// (the real context menu). Keeping a single definition means the two can't
+// drift out of sync with each other.
+- (NSArray<MoonlightHostAction*>*) hostActionsForHost:(TemporaryHost*)host {
+    __weak typeof(self) weakSelf = self;
+    NSMutableArray<MoonlightHostAction*>* actions = [NSMutableArray array];
+
     if (host.state != StateOnline) {
-        [longClickAlert addAction:[UIAlertAction actionWithTitle:@"Wake PC" style:UIAlertActionStyleDefault handler:^(UIAlertAction* action){
+        [actions addObject:[MoonlightHostAction actionWithTitle:@"Wake PC" image:nil destructive:NO handler:^{
+            typeof(self) strongSelf = weakSelf;
+            if (strongSelf == nil) {
+                return;
+            }
             UIAlertController* wolAlert = [UIAlertController alertControllerWithTitle:@"Wake-On-LAN" message:@"" preferredStyle:UIAlertControllerStyleAlert];
             [wolAlert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
             if (host.mac == nil || [host.mac isEqualToString:@"00:00:00:00:00:00"]) {
@@ -494,80 +700,163 @@ static NSMutableSet* hostList;
                 });
                 wolAlert.message = @"Successfully sent wake-up request. It may take a few moments for the PC to wake. If it never wakes up, ensure it's properly configured for Wake-on-LAN.";
             }
-            [[self activeViewController] presentViewController:wolAlert animated:YES completion:nil];
+            [[strongSelf activeViewController] presentViewController:wolAlert animated:YES completion:nil];
         }]];
     }
-    else if (host.pairState == PairStatePaired) {
-        [longClickAlert addAction:[UIAlertAction actionWithTitle:@"View All Apps" style:UIAlertActionStyleDefault handler:^(UIAlertAction* action){
-            self->_showHiddenApps = YES;
-            [self hostClicked:host view:view];
-        }]];
-        
 #if !TARGET_OS_TV
-        if (host.isNvidiaServerSoftware) {
-            [longClickAlert addAction:[UIAlertAction actionWithTitle:@"NVIDIA GameStream End-of-Service" style:UIAlertActionStyleDefault handler:^(UIAlertAction* action){
-                [Utils launchUrl:@"https://github.com/moonlight-stream/moonlight-docs/wiki/NVIDIA-GameStream-End-Of-Service-Announcement-FAQ"];
-            }]];
-        }
-#endif
-    }
-    [longClickAlert addAction:[UIAlertAction actionWithTitle:@"Test Network" style:UIAlertActionStyleDefault handler:^(UIAlertAction* action) {
-        [self showLoadingFrame:^{
-            dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-                // Perform the network test on a GCD worker thread. It may take a while.
-                unsigned int portTestResult = LiTestClientConnectivity(CONN_TEST_SERVER, 443, ML_PORT_FLAG_ALL);
-                dispatch_sync(dispatch_get_main_queue(), ^{
-                    [self hideLoadingFrame:^{
-                        NSString* message;
-                        
-                        if (portTestResult == 0) {
-                            message = @"This network does not appear to be blocking Moonlight. If you still have trouble connecting, check your PC's firewall settings.\n\nVisit the Moonlight Setup Guide on GitHub for additional setup help and troubleshooting steps.";
-                        }
-                        else if (portTestResult == ML_TEST_RESULT_INCONCLUSIVE) {
-                            message = @"The network test could not be performed because none of Moonlight's connection testing servers were reachable. Check your Internet connection or try again later.";
-                        }
-                        else {
-                            char blockedPorts[512];
-                            LiStringifyPortFlags(portTestResult, "\n", blockedPorts, sizeof(blockedPorts));
-                            message = [NSString stringWithFormat:@"Your current network connection seems to be blocking Moonlight. Streaming may not work while connected to this network.\n\nThe following network ports were blocked:\n%s", blockedPorts];
-                        }
-                        
-                        UIAlertController* netTestAlert = [UIAlertController alertControllerWithTitle:@"Network Test Complete" message:message preferredStyle:UIAlertControllerStyleAlert];
-                        [netTestAlert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
-                        [[self activeViewController] presentViewController:netTestAlert animated:YES completion:nil];
-                    }];
-                });
-            });
-        }];
-    }]];
-#if !TARGET_OS_TV
-    if (host.state != StateOnline) {
-        [longClickAlert addAction:[UIAlertAction actionWithTitle:@"NVIDIA GameStream End-of-Service" style:UIAlertActionStyleDefault handler:^(UIAlertAction* action){
+    else if (host.pairState == PairStatePaired && host.isNvidiaServerSoftware) {
+        [actions addObject:[MoonlightHostAction actionWithTitle:@"NVIDIA GameStream End-of-Service" image:nil destructive:NO handler:^{
             [Utils launchUrl:@"https://github.com/moonlight-stream/moonlight-docs/wiki/NVIDIA-GameStream-End-Of-Service-Announcement-FAQ"];
         }]];
-        [longClickAlert addAction:[UIAlertAction actionWithTitle:@"Connection Help" style:UIAlertActionStyleDefault handler:^(UIAlertAction* action){
+    }
+#endif
+
+    [actions addObject:[MoonlightHostAction actionWithTitle:@"Test Network" image:[UIImage systemImageNamed:@"network"] destructive:NO handler:^{
+        typeof(self) strongSelf = weakSelf;
+        if (strongSelf == nil) {
+            return;
+        }
+        [strongSelf testNetwork];
+    }]];
+
+#if !TARGET_OS_TV
+    if (host.state != StateOnline) {
+        [actions addObject:[MoonlightHostAction actionWithTitle:@"NVIDIA GameStream End-of-Service" image:nil destructive:NO handler:^{
+            [Utils launchUrl:@"https://github.com/moonlight-stream/moonlight-docs/wiki/NVIDIA-GameStream-End-Of-Service-Announcement-FAQ"];
+        }]];
+        [actions addObject:[MoonlightHostAction actionWithTitle:@"Connection Help" image:[UIImage systemImageNamed:@"questionmark.circle"] destructive:NO handler:^{
             [Utils launchUrl:@"https://github.com/moonlight-stream/moonlight-docs/wiki/Troubleshooting"];
         }]];
     }
 #endif
-    [longClickAlert addAction:[UIAlertAction actionWithTitle:@"Remove Host" style:UIAlertActionStyleDestructive handler:^(UIAlertAction* action) {
-        [self->_discMan removeHostFromDiscovery:host];
-        DataManager* dataMan = [[DataManager alloc] init];
-        [dataMan removeHost:host];
-        @synchronized(hostList) {
-            [hostList removeObject:host];
-            [self updateAllHosts:[hostList allObjects]];
+
+    [actions addObject:[MoonlightHostAction actionWithTitle:@"Remove PC" image:[UIImage systemImageNamed:@"trash"] destructive:YES handler:^{
+        typeof(self) strongSelf = weakSelf;
+        if (strongSelf == nil) {
+            return;
         }
-        
+        [strongSelf removeHost:host];
     }]];
+
+    return actions;
+}
+
+- (void)hostLongClicked:(TemporaryHost *)host view:(UIView *)view {
+    Log(LOG_D, @"Long clicked host: %@", host.name);
+    NSString* message;
+
+    switch (host.state) {
+        case StateOffline:
+            message = @"Offline";
+            break;
+
+        case StateOnline:
+            if (host.pairState == PairStatePaired) {
+                message = @"Online - Paired";
+            }
+            else {
+                message = @"Online - Not Paired";
+            }
+            break;
+
+        case StateUnknown:
+            message = @"Connecting";
+            break;
+
+        default:
+            break;
+    }
+
+    UIAlertController* longClickAlert = [UIAlertController alertControllerWithTitle:host.name message:message preferredStyle:UIAlertControllerStyleActionSheet];
+
+    // Map the shared action list onto UIAlertActions rather than keeping a
+    // second, independent definition of the host's actions.
+    for (MoonlightHostAction* action in [self hostActionsForHost:host]) {
+        UIAlertActionStyle style = action.destructive ? UIAlertActionStyleDestructive : UIAlertActionStyleDefault;
+        [longClickAlert addAction:[UIAlertAction actionWithTitle:action.title style:style handler:^(UIAlertAction* alertAction) {
+            action.handler();
+        }]];
+    }
+
     [longClickAlert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-    
+
     // these two lines are required for iPad support of UIAlertSheet
     longClickAlert.popoverPresentationController.sourceView = view;
-    
+
     longClickAlert.popoverPresentationController.sourceRect = CGRectMake(view.bounds.size.width / 2.0, view.bounds.size.height / 2.0, 1.0, 1.0); // center of the view
     [[self activeViewController] presentViewController:longClickAlert animated:YES completion:nil];
 }
+
+- (void) testNetwork {
+    [self showLoadingFrame:^{
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+            // May take a while, so keep it off the main thread.
+            unsigned int portTestResult = LiTestClientConnectivity(CONN_TEST_SERVER, 443, ML_PORT_FLAG_ALL);
+            dispatch_sync(dispatch_get_main_queue(), ^{
+                [self hideLoadingFrame:^{
+                    NSString* message;
+
+                    if (portTestResult == 0) {
+                        message = @"This network does not appear to be blocking Moonlight. If you still have trouble connecting, check your PC's firewall settings.\n\nVisit the Moonlight Setup Guide on GitHub for additional setup help and troubleshooting steps.";
+                    }
+                    else if (portTestResult == ML_TEST_RESULT_INCONCLUSIVE) {
+                        message = @"The network test could not be performed because none of Moonlight's connection testing servers were reachable. Check your Internet connection or try again later.";
+                    }
+                    else {
+                        char blockedPorts[512];
+                        LiStringifyPortFlags(portTestResult, "\n", blockedPorts, sizeof(blockedPorts));
+                        message = [NSString stringWithFormat:@"Your current network connection seems to be blocking Moonlight. Streaming may not work while connected to this network.\n\nThe following network ports were blocked:\n%s", blockedPorts];
+                    }
+
+                    UIAlertController* netTestAlert = [UIAlertController alertControllerWithTitle:@"Network Test Complete" message:message preferredStyle:UIAlertControllerStyleAlert];
+                    [netTestAlert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+                    [[self activeViewController] presentViewController:netTestAlert animated:YES completion:nil];
+                }];
+            });
+        });
+    }];
+}
+
+- (void) removeHost:(TemporaryHost*)host {
+    [self->_discMan removeHostFromDiscovery:host];
+    DataManager* dataMan = [[DataManager alloc] init];
+    [dataMan removeHost:host];
+    @synchronized(hostList) {
+        [hostList removeObject:host];
+        [self updateAllHosts:[hostList allObjects]];
+    }
+    if (host == _selectedHost) {
+        [self showHostSelectionView];
+    }
+}
+
+#if !TARGET_OS_TV
+// App-scoped actions only. PC-scoped actions (Test Network, Connection Help,
+// Remove PC) live in the host long-press menu instead — see
+// hostActionsForHost: — since they act on the PC, not the app list.
+- (UIMenu*) gamesMenu {
+    __weak typeof(self) weakSelf = self;
+
+    TemporaryHost* host = _selectedHost;
+    if (host == nil) {
+        return nil;
+    }
+
+    UIAction* toggleHidden = [UIAction actionWithTitle:(_showHiddenApps ? @"Hide Hidden Apps" : @"Show Hidden Apps")
+                                                  image:[UIImage systemImageNamed:@"eye"]
+                                             identifier:nil
+                                                handler:^(UIAction* action) {
+        typeof(self) strongSelf = weakSelf;
+        if (strongSelf == nil) {
+            return;
+        }
+        strongSelf->_showHiddenApps = !strongSelf->_showHiddenApps;
+        [strongSelf updateAppsForHost:host];
+    }];
+
+    return [UIMenu menuWithTitle:host.name children:@[toggleHidden]];
+}
+#endif
 
 - (void) addHostClicked {
     Log(LOG_D, @"Clicked add host");
@@ -712,19 +1001,66 @@ static NSMutableSet* hostList;
 #endif
 }
 
+// Quits the app currently running on its host, then runs completion on the
+// main thread if the quit succeeded. Displays its own failure alert.
+- (void) quitRunningApp:(TemporaryApp*)currentApp then:(void (^)(void))completion {
+    [self showLoadingFrame: ^{
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+            HttpManager* hMan = [[HttpManager alloc] initWithHost:currentApp.host];
+            HttpResponse* quitResponse = [[HttpResponse alloc] init];
+            HttpRequest* quitRequest = [HttpRequest requestForResponse:quitResponse withUrlRequest:[hMan newQuitAppRequest]];
+
+            [self->_discMan pauseDiscoveryForHost:currentApp.host];
+            [hMan executeRequestSynchronously:quitRequest];
+            if (quitResponse.statusCode == 200) {
+                ServerInfoResponse* serverInfoResp = [[ServerInfoResponse alloc] init];
+                [hMan executeRequestSynchronously:[HttpRequest requestForResponse:serverInfoResp withUrlRequest:[hMan newServerInfoRequest:false]
+                                                                    fallbackError:401 fallbackRequest:[hMan newHttpServerInfoRequest]]];
+                if (![serverInfoResp isStatusOk] || [[serverInfoResp getStringTag:@"state"] hasSuffix:@"_SERVER_BUSY"]) {
+                    // Newer GFE reports success even when another client's app
+                    // survives the quit. Patch the response so the UI behaves.
+                    quitResponse.statusCode = 599;
+                }
+                else if ([serverInfoResp isStatusOk]) {
+                    [serverInfoResp populateHost:currentApp.host];
+                }
+            }
+            [self->_discMan resumeDiscoveryForHost:currentApp.host];
+
+            if (quitResponse.statusCode != 200) {
+                UIAlertController* alert = [UIAlertController alertControllerWithTitle:@"Quitting App Failed"
+                                                                               message:@"Failed to quit app. If this app was started by "
+                                            "another device, you'll need to quit from that device."
+                                                                        preferredStyle:UIAlertControllerStyleAlert];
+                [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [self updateAppsForHost:currentApp.host];
+                    [self hideLoadingFrame: ^{
+                        [[self activeViewController] presentViewController:alert animated:YES completion:nil];
+                    }];
+                });
+                return;
+            }
+
+            currentApp.host.currentGame = @"0";
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (completion != nil) {
+                    [self hideLoadingFrame:completion];
+                }
+                else {
+                    [self hideLoadingFrame:^{
+                        [self updateAppsForHost:currentApp.host];
+                    }];
+                }
+            });
+        });
+    }];
+}
+
 - (void)appLongClicked:(TemporaryApp *)app view:(UIView *)view {
     Log(LOG_D, @"Long clicked app: %@", app.name);
     
     [_appManager stopRetrieving];
-    
-#if !TARGET_OS_TV
-    if (currentPosition != FrontViewPositionLeft) {
-        // This must not be animated because we need the position
-        // to change (and notify our callback to save settings data)
-        // before we call prepareToStreamApp.
-        [[self revealViewController] revealToggleAnimated:NO];
-    }
-#endif
 
     TemporaryApp* currentApp = [self findRunningApp:app.host];
     
@@ -763,68 +1099,21 @@ static NSMutableSet* hostList;
     
     if (currentApp != nil) {
         [alertController addAction:[UIAlertAction actionWithTitle:
-                                    [app.id isEqualToString:currentApp.id] ? @"Quit App" : @"Quit Running App and Start" style:UIAlertActionStyleDestructive handler:^(UIAlertAction* action){
-                                        Log(LOG_I, @"Quitting application: %@", currentApp.name);
-                                        [self showLoadingFrame: ^{
-                                            dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-                                                HttpManager* hMan = [[HttpManager alloc] initWithHost:app.host];
-                                                HttpResponse* quitResponse = [[HttpResponse alloc] init];
-                                                HttpRequest* quitRequest = [HttpRequest requestForResponse: quitResponse withUrlRequest:[hMan newQuitAppRequest]];
-                                                
-                                                // Exempt this host from discovery while handling the quit operation
-                                                [self->_discMan pauseDiscoveryForHost:app.host];
-                                                [hMan executeRequestSynchronously:quitRequest];
-                                                if (quitResponse.statusCode == 200) {
-                                                    ServerInfoResponse* serverInfoResp = [[ServerInfoResponse alloc] init];
-                                                    [hMan executeRequestSynchronously:[HttpRequest requestForResponse:serverInfoResp withUrlRequest:[hMan newServerInfoRequest:false]
-                                                                                                        fallbackError:401 fallbackRequest:[hMan newHttpServerInfoRequest]]];
-                                                    if (![serverInfoResp isStatusOk] || [[serverInfoResp getStringTag:@"state"] hasSuffix:@"_SERVER_BUSY"]) {
-                                                        // On newer GFE versions, the quit request succeeds even though the app doesn't
-                                                        // really quit if another client tries to kill your app. We'll patch the response
-                                                        // to look like the old error in that case, so the UI behaves.
-                                                        quitResponse.statusCode = 599;
-                                                    }
-                                                    else if ([serverInfoResp isStatusOk]) {
-                                                        // Update the host object with this info
-                                                        [serverInfoResp populateHost:app.host];
-                                                    }
-                                                }
-                                                [self->_discMan resumeDiscoveryForHost:app.host];
-
-                                                // If it fails, display an error and stop the current operation
-                                                if (quitResponse.statusCode != 200) {
-                                                    UIAlertController* alert = [UIAlertController alertControllerWithTitle:@"Quitting App Failed"
-                                                                                                message:@"Failed to quit app. If this app was started by "
-                                                             "another device, you'll need to quit from that device."
-                                                                                         preferredStyle:UIAlertControllerStyleAlert];
-                                                    [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
-                                                    dispatch_async(dispatch_get_main_queue(), ^{
-                                                        [self updateAppsForHost:app.host];
-                                                        [self hideLoadingFrame: ^{
-                                                            [[self activeViewController] presentViewController:alert animated:YES completion:nil];
-                                                        }];
-                                                    });
-                                                }
-                                                else {
-                                                    app.host.currentGame = @"0";
-                                                    dispatch_async(dispatch_get_main_queue(), ^{
-                                                        // If it succeeds and we're to start streaming, segue to the stream
-                                                        if (![app.id isEqualToString:currentApp.id]) {
-                                                            [self prepareToStreamApp:app];
-                                                            [self hideLoadingFrame: ^{
-                                                                [self performSegueWithIdentifier:@"createStreamFrame" sender:nil];
-                                                            }];
-                                                        }
-                                                        else {
-                                                            // Otherwise, just hide the loading icon
-                                                            [self hideLoadingFrame:nil];
-                                                        }
-                                                    });
-                                                }
-                                            });
-                                        }];
-                                        
-                                    }]];
+                                    [app.id isEqualToString:currentApp.id] ? @"Quit App" : @"Quit Running App and Start"
+                                                            style:UIAlertActionStyleDestructive
+                                                          handler:^(UIAlertAction* action){
+            Log(LOG_I, @"Quitting application: %@", currentApp.name);
+            BOOL startAfterQuit = ![app.id isEqualToString:currentApp.id];
+            [self quitRunningApp:currentApp then:^{
+                if (startAfterQuit) {
+                    [self prepareToStreamApp:app];
+                    [self performSegueWithIdentifier:@"createStreamFrame" sender:nil];
+                }
+                else {
+                    [self updateAppsForHost:app.host];
+                }
+            }];
+        }]];
     }
 
     if (currentApp == nil || ![app.id isEqualToString:currentApp.id] || app.hidden) {
@@ -852,16 +1141,7 @@ static NSMutableSet* hostList;
     Log(LOG_D, @"Clicked app: %@", app.name);
     
     [_appManager stopRetrieving];
-    
-#if !TARGET_OS_TV
-    if (currentPosition != FrontViewPositionLeft) {
-        // This must not be animated because we need the position
-        // to change (and notify our callback to save settings data)
-        // before we call prepareToStreamApp.
-        [[self revealViewController] revealToggleAnimated:NO];
-    }
-#endif
-    
+
     if ([self findRunningApp:app.host]) {
         // If there's a running app, display a menu
         [self appLongClicked:app view:view];
@@ -881,19 +1161,312 @@ static NSMutableSet* hostList;
 }
 
 #if !TARGET_OS_TV
-- (void)revealController:(SWRevealViewController *)revealController didMoveToPosition:(FrontViewPosition)position {
-    // If we moved back to the center position, we should save the settings
-    if (position == FrontViewPositionLeft) {
-        [(SettingsViewController*)[revealController rearViewController] saveSettings];
+- (void) rebuildSections {
+    NSMutableArray<NSNumber*>* sections = [NSMutableArray arrayWithObject:@(MoonlightSectionHosts)];
+
+    // Read findRunningApp: exactly once and let both the section's existence
+    // and its content (numberOfItemsInSection:/cellForItemAtIndexPath:) derive
+    // from this single snapshot. currentGame can change on a background thread
+    // (DiscoveryWorker's poll) at any time, so re-querying at each call site
+    // would let the section's existence and its content disagree.
+    _continueApp = _selectedHost != nil ? [self findRunningApp:_selectedHost] : nil;
+
+    if (_selectedHost != nil) {
+        if (_continueApp != nil) {
+            [sections addObject:@(MoonlightSectionContinue)];
+        }
+        [sections addObject:@(MoonlightSectionGames)];
     }
-    
-    currentPosition = position;
+
+    _sections = sections;
+}
+
+- (MoonlightSection) sectionAtIndex:(NSInteger)index {
+    return (MoonlightSection)[_sections[index] integerValue];
+}
+
+- (void) reloadEverything {
+    [self rebuildSections];
+    [self.collectionView reloadData];
+    [self updateAmbientBackground];
+    [self updateEmptyState];
+}
+
+- (UIColor*) ambientColorForApp:(TemporaryApp*)app {
+    if (app == nil) {
+        return nil;
+    }
+
+    UIColor* cached = [_ambientCache objectForKey:app];
+    if (cached != nil) {
+        return cached;
+    }
+
+    // Not sampled yet — compute it now from whatever art we already decoded.
+    UIColor* ambient = [MoonlightTheme ambientColorForImage:[_boxArtCache objectForKey:app]];
+    if (ambient != nil) {
+        [_ambientCache setObject:ambient forKey:app];
+    }
+    return ambient;
+}
+
+- (void) updateAmbientBackground {
+    // The running game owns the tint; otherwise the first game in the grid
+    // does. Read _continueApp rather than calling findRunningApp: again:
+    // rebuildSections (called just above, in reloadEverything) already took
+    // the single snapshot of host.currentGame for this refresh, and
+    // re-deriving it here could disagree with that snapshot if the
+    // background DiscoveryWorker poll mutates currentGame in between.
+    TemporaryApp* source = _continueApp;
+    if (source == nil) {
+        source = _sortedAppList.firstObject;
+    }
+
+    UIColor* ambient = [self ambientColorForApp:source] ?: [MoonlightTheme accentColor];
+
+    NSArray* colors = @[(id)[ambient colorWithAlphaComponent:0.38f].CGColor,
+                        (id)[ambient colorWithAlphaComponent:0.0f].CGColor];
+
+    CABasicAnimation* fade = [CABasicAnimation animationWithKeyPath:@"colors"];
+    fade.fromValue = _ambientLayer.colors;
+    fade.toValue = colors;
+    fade.duration = 0.45;
+
+    _ambientLayer.colors = colors;
+    [_ambientLayer addAnimation:fade forKey:@"ambient"];
+}
+
+- (void) updateEmptyState {
+    if (_selectedHost == nil && _sortedHostList.count == 0) {
+        UIContentUnavailableConfiguration* config = [UIContentUnavailableConfiguration loadingConfiguration];
+        config.text = @"Looking for PCs";
+        config.secondaryText = @"Moonlight is searching your network. Make sure your PC is awake and running Sunshine or GeForce Experience.";
+
+        __weak typeof(self) weakSelf = self;
+        UIButtonConfiguration* buttonConfig = [UIButtonConfiguration borderedProminentButtonConfiguration];
+        buttonConfig.title = @"Add PC Manually";
+        buttonConfig.baseBackgroundColor = [MoonlightTheme accentColor];
+        config.button = buttonConfig;
+        config.buttonProperties.primaryAction = [UIAction actionWithTitle:@"Add PC Manually"
+                                                                    image:nil
+                                                               identifier:nil
+                                                                  handler:^(UIAction* action) {
+            typeof(self) strongSelf = weakSelf;
+            if (strongSelf == nil) {
+                return;
+            }
+            [strongSelf addHostClicked];
+        }];
+
+        self.contentUnavailableConfiguration = config;
+        return;
+    }
+
+    if (_selectedHost == nil) {
+        UIContentUnavailableConfiguration* config = [UIContentUnavailableConfiguration emptyConfiguration];
+        config.image = [UIImage systemImageNamed:@"desktopcomputer"];
+        config.text = @"Choose a PC";
+        config.secondaryText = @"Pick one of the PCs above to see its applications.";
+        self.contentUnavailableConfiguration = config;
+        return;
+    }
+
+    self.contentUnavailableConfiguration = nil;
+}
+
+- (NSCollectionLayoutBoundarySupplementaryItem*) makeSectionHeader {
+    NSCollectionLayoutSize* size =
+        [NSCollectionLayoutSize sizeWithWidthDimension:[NSCollectionLayoutDimension fractionalWidthDimension:1.0]
+                                       heightDimension:[NSCollectionLayoutDimension estimatedDimension:44]];
+    return [NSCollectionLayoutBoundarySupplementaryItem boundarySupplementaryItemWithLayoutSize:size
+                                                                                   elementKind:UICollectionElementKindSectionHeader
+                                                                                     alignment:NSRectAlignmentTop];
+}
+
+- (NSCollectionLayoutSection*) makeHostsSection {
+    // Estimated rather than absolute so a card grows to fit its labels
+    // (e.g. the "Add PC" card's "Enter an IP address" subtitle in landscape).
+    // UIComputerView's content row is pinned to its own leading/trailing
+    // anchors with no fixed width, so its natural width follows the labels.
+    NSCollectionLayoutSize* itemSize =
+        [NSCollectionLayoutSize sizeWithWidthDimension:[NSCollectionLayoutDimension estimatedDimension:240]
+                                       heightDimension:[NSCollectionLayoutDimension absoluteDimension:88]];
+
+    NSCollectionLayoutItem* item = [NSCollectionLayoutItem itemWithLayoutSize:itemSize];
+    NSCollectionLayoutGroup* group = [NSCollectionLayoutGroup horizontalGroupWithLayoutSize:itemSize
+                                                                                  subitems:@[item]];
+
+    NSCollectionLayoutSection* section = [NSCollectionLayoutSection sectionWithGroup:group];
+    section.orthogonalScrollingBehavior = UICollectionLayoutSectionOrthogonalScrollingBehaviorContinuousGroupLeadingBoundary;
+    section.interGroupSpacing = 12;
+    section.contentInsets = NSDirectionalEdgeInsetsMake(0, 20, 0, 20);
+    section.boundarySupplementaryItems = @[[self makeSectionHeader]];
+    return section;
+}
+
+- (NSCollectionLayoutSection*) makeGamesSectionForEnvironment:(id<NSCollectionLayoutEnvironment>)env {
+    CGFloat available = env.container.effectiveContentSize.width - 40;
+
+    // Aim for ~170pt-wide posters, minimum two columns on the narrowest phone.
+    NSInteger columns = MAX(2, (NSInteger)floor(available / 170.0));
+    CGFloat columnWidth = available / columns - 12;
+
+    NSCollectionLayoutSize* itemSize =
+        [NSCollectionLayoutSize sizeWithWidthDimension:[NSCollectionLayoutDimension fractionalWidthDimension:1.0 / columns]
+                                       heightDimension:[NSCollectionLayoutDimension fractionalHeightDimension:1.0]];
+    NSCollectionLayoutItem* item = [NSCollectionLayoutItem itemWithLayoutSize:itemSize];
+    item.contentInsets = NSDirectionalEdgeInsetsMake(0, 6, 0, 6);
+
+    // Room for two lines of the tile's name label plus the 6pt gap that
+    // buildLayout puts between the poster and the label. Derived from the live
+    // font rather than hardcoded, because an absolute layout dimension does not
+    // otherwise track Dynamic Type, and at accessibility sizes a fixed constant
+    // lets the label overlap the row below. Keep the 6 here in step with the
+    // 6pt gap constant in UIAppView's buildLayout.
+    CGFloat lineHeight = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline].lineHeight;
+    CGFloat labelAllowance = ceil(lineHeight * 2) + 6 + 4;
+
+    // Box art is 3:4, plus room for two lines of name beneath it.
+    NSCollectionLayoutSize* groupSize =
+        [NSCollectionLayoutSize sizeWithWidthDimension:[NSCollectionLayoutDimension fractionalWidthDimension:1.0]
+                                       heightDimension:[NSCollectionLayoutDimension absoluteDimension:columnWidth * 4.0 / 3.0 + labelAllowance]];
+    NSCollectionLayoutGroup* group = [NSCollectionLayoutGroup horizontalGroupWithLayoutSize:groupSize
+                                                                                    subitem:item
+                                                                                      count:columns];
+
+    NSCollectionLayoutSection* section = [NSCollectionLayoutSection sectionWithGroup:group];
+    section.interGroupSpacing = 16;
+    section.contentInsets = NSDirectionalEdgeInsetsMake(0, 14, 20, 14);
+    section.boundarySupplementaryItems = @[[self makeSectionHeader]];
+    return section;
+}
+
+- (NSCollectionLayoutSection*) makeContinueSection {
+    NSCollectionLayoutSize* size =
+        [NSCollectionLayoutSize sizeWithWidthDimension:[NSCollectionLayoutDimension fractionalWidthDimension:1.0]
+                                       heightDimension:[NSCollectionLayoutDimension absoluteDimension:172]];
+
+    NSCollectionLayoutItem* item = [NSCollectionLayoutItem itemWithLayoutSize:size];
+    NSCollectionLayoutGroup* group = [NSCollectionLayoutGroup horizontalGroupWithLayoutSize:size subitems:@[item]];
+
+    NSCollectionLayoutSection* section = [NSCollectionLayoutSection sectionWithGroup:group];
+    section.contentInsets = NSDirectionalEdgeInsetsMake(0, 20, 0, 20);
+    section.boundarySupplementaryItems = @[[self makeSectionHeader]];
+    return section;
+}
+
+- (UICollectionViewLayout*) makeLayout {
+    __weak MainFrameViewController* weakSelf = self;
+
+    UICollectionViewCompositionalLayoutConfiguration* config =
+        [[UICollectionViewCompositionalLayoutConfiguration alloc] init];
+    config.interSectionSpacing = 28;
+
+    return [[UICollectionViewCompositionalLayout alloc]
+            initWithSectionProvider:^NSCollectionLayoutSection*(NSInteger index, id<NSCollectionLayoutEnvironment> env) {
+        MainFrameViewController* self = weakSelf;
+        if (self == nil) {
+            // Unreachable in practice: this block is retained (transitively)
+            // by self.collectionView, which self owns, so self cannot be
+            // deallocated while the layout is still asking for sections.
+            // There's no self to build a fallback section from here, so nil
+            // is the only option.
+            return nil;
+        }
+        if (index >= self->_sections.count) {
+            // Defensive: UICollectionViewCompositionalLayout throws on a nil
+            // section, so don't let a would-be inconsistency become a hard
+            // crash. Degrade to the hosts section instead.
+            return [self makeHostsSection];
+        }
+
+        switch ([self sectionAtIndex:index]) {
+            case MoonlightSectionHosts:
+                return [self makeHostsSection];
+            case MoonlightSectionContinue:
+                return [self makeContinueSection];
+            case MoonlightSectionGames:
+                return [self makeGamesSectionForEnvironment:env];
+        }
+    } configuration:config];
+}
+
+- (void) pullToRefresh:(UIRefreshControl*)sender {
+    [_discMan resetDiscoveryState];
+    [_discMan startDiscovery];
+
+    if (_selectedHost != nil && _selectedHost.pairState == PairStatePaired) {
+        // nil view: not a user tap on a host, so skip the cached-app-list fast
+        // path and refetch serverinfo. See hostClicked:view:.
+        [self hostClicked:_selectedHost view:nil];
+    }
+
+    [sender endRefreshing];
 }
 #endif
 
 #if TARGET_OS_TV
 - (void)collectionView:(UICollectionView *)collectionView didSelectItemAtIndexPath:(NSIndexPath *)indexPath {
     [self appClicked:_sortedAppList[indexPath.row] view:nil];
+}
+#else
+// UIComputerView's own target/action is disabled on iOS (see
+// cellForItemAtIndexPath:'s hosts branch), so the collection view now owns
+// tap handling for the Hosts section. The Continue and Applications sections
+// aren't touched here — the hero cell's buttons and UIAppView handle
+// themselves.
+- (void)collectionView:(UICollectionView *)collectionView didSelectItemAtIndexPath:(NSIndexPath *)indexPath {
+    [collectionView deselectItemAtIndexPath:indexPath animated:YES];
+
+    if ([self sectionAtIndex:indexPath.section] != MoonlightSectionHosts) {
+        return;
+    }
+
+    if (indexPath.item >= _sortedHostList.count) {
+        [self addHostClicked];
+        return;
+    }
+
+    // Pass the cell (never nil) as the "view" — hostClicked:/hostLongClicked:
+    // treat a nil view as "programmatic", which changes their control flow,
+    // and popoverPresentationController.sourceView = nil throws on iPad.
+    UICollectionViewCell* cell = [collectionView cellForItemAtIndexPath:indexPath];
+    [self hostClicked:_sortedHostList[indexPath.item] view:cell];
+}
+
+- (UIContextMenuConfiguration *)collectionView:(UICollectionView *)collectionView
+    contextMenuConfigurationForItemAtIndexPath:(NSIndexPath *)indexPath
+                                          point:(CGPoint)point {
+    if ([self sectionAtIndex:indexPath.section] != MoonlightSectionHosts ||
+        indexPath.item >= _sortedHostList.count) {
+        // No context menu for the "Add PC" tile or any other section.
+        return nil;
+    }
+
+    // Return a real context menu instead of presenting an action sheet and
+    // returning nil: presenting-then-returning-nil leaves UIKit's cell-lift
+    // animation and the action sheet's slide-up fighting each other, which is
+    // what made the menu "jump" as it appeared.
+    TemporaryHost* host = _sortedHostList[indexPath.item];
+    __weak typeof(self) weakSelf = self;
+    return [UIContextMenuConfiguration configurationWithIdentifier:nil previewProvider:nil actionProvider:^UIMenu*(NSArray<UIMenuElement*>* suggested) {
+        typeof(self) strongSelf = weakSelf;
+        if (strongSelf == nil) {
+            return nil;
+        }
+
+        NSMutableArray<UIAction*>* menuActions = [NSMutableArray array];
+        for (MoonlightHostAction* action in [strongSelf hostActionsForHost:host]) {
+            UIAction* menuAction = [UIAction actionWithTitle:action.title image:action.image identifier:nil handler:^(UIAction* a) {
+                action.handler();
+            }];
+            if (action.destructive) {
+                menuAction.attributes = UIMenuElementAttributesDestructive;
+            }
+            [menuActions addObject:menuAction];
+        }
+        return [UIMenu menuWithTitle:host.name children:menuActions];
+    }];
 }
 #endif
 
@@ -913,45 +1486,49 @@ static NSMutableSet* hostList;
     [_loadingFrame dismissLoadingFrame:completion];
 }
 
-- (void)adjustScrollViewForSafeArea:(UIScrollView*)view {
-    if (@available(iOS 11.0, *)) {
-        if (self.view.safeAreaInsets.left >= 20 || self.view.safeAreaInsets.right >= 20) {
-            view.contentInset = UIEdgeInsetsMake(0, 20, 0, 20);
-        }
-    }
-}
-
-// Adjust the subviews for the safe area on the iPhone X.
-- (void)viewSafeAreaInsetsDidChange {
-    [super viewSafeAreaInsetsDidChange];
-    
-    [self adjustScrollViewForSafeArea:self.collectionView];
-    [self adjustScrollViewForSafeArea:self->hostScrollView];
-}
-
 - (void)viewDidLoad
 {
     [super viewDidLoad];
         
 #if !TARGET_OS_TV
-    // Set the side bar button action. When it's tapped, it'll show the sidebar.
-    [_settingsButton setTarget:self.revealViewController];
-    [_settingsButton setAction:@selector(revealToggle:)];
-    
-    // Set the host name button action. When it's tapped, it'll show the host selection view.
-    [_upButton setTarget:self];
-    [_upButton setAction:@selector(showHostSelectionView)];
-    [self disableUpButton];
-    
-    // Set the gesture
-    [self.view addGestureRecognizer:self.revealViewController.panGestureRecognizer];
-    
-    // Get callbacks associated with the viewController
-    [self.revealViewController setDelegate:self];
-    
-    // Disable bounce-back on reveal VC otherwise the settings will snap closed
-    // if the user drags all the way off the screen opposite the settings pane.
-    self.revealViewController.bounceBackOnOverdraw = NO;
+    self.navigationItem.rightBarButtonItem =
+        [[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"gearshape"]
+                                         style:UIBarButtonItemStylePlain
+                                        target:self
+                                        action:@selector(showSettings)];
+
+    // Must run before the layout is installed: setCollectionViewLayout: can
+    // query the data source, which indexes into _sections.
+    [self rebuildSections];
+
+    _ambientCache = [[NSCache alloc] init];
+
+    _ambientLayer = [CAGradientLayer layer];
+    _ambientLayer.type = kCAGradientLayerRadial;
+    _ambientLayer.startPoint = CGPointMake(0.5, 0.0);
+    _ambientLayer.endPoint = CGPointMake(1.4, 1.4);
+    _ambientLayer.colors = @[(id)[UIColor clearColor].CGColor, (id)[UIColor clearColor].CGColor];
+
+    UIView* backdrop = [[UIView alloc] initWithFrame:self.collectionView.bounds];
+    backdrop.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    backdrop.userInteractionEnabled = NO;
+    [backdrop.layer addSublayer:_ambientLayer];
+    self.collectionView.backgroundView = backdrop;
+
+    self.collectionView.backgroundColor = [UIColor systemBackgroundColor];
+    self.collectionView.alwaysBounceVertical = YES;
+    [self.collectionView registerClass:[MoonlightTileCell class]
+            forCellWithReuseIdentifier:@"tile"];
+    [self.collectionView registerClass:[MoonlightHeroCell class]
+            forCellWithReuseIdentifier:@"hero"];
+    [self.collectionView registerClass:[MoonlightHeaderView class]
+            forSupplementaryViewOfKind:UICollectionElementKindSectionHeader
+                   withReuseIdentifier:@"header"];
+    [self.collectionView setCollectionViewLayout:[self makeLayout] animated:NO];
+
+    UIRefreshControl* refresh = [[UIRefreshControl alloc] init];
+    [refresh addTarget:self action:@selector(pullToRefresh:) forControlEvents:UIControlEventValueChanged];
+    self.collectionView.refreshControl = refresh;
 #else
     // The settings button will direct the user into the Settings app on tvOS
     [_settingsButton setTarget:self];
@@ -969,10 +1546,7 @@ static NSMutableSet* hostList;
 #endif
     
     _loadingFrame = [self.storyboard instantiateViewControllerWithIdentifier:@"loadingFrame"];
-    
-    // Set the current position to the center
-    currentPosition = FrontViewPositionLeft;
-    
+
     // Set up crypto
     [CryptoManager generateKeyPairUsingSSL];
     _uniqueId = [IdManager getUniqueId];
@@ -987,13 +1561,9 @@ static NSMutableSet* hostList;
     }
     
     _boxArtCache = [[NSCache alloc] init];
-        
-    hostScrollView = [[ComputerScrollView alloc] init];
-    hostScrollView.frame = CGRectMake(0, self.navigationController.navigationBar.frame.origin.y + self.navigationController.navigationBar.frame.size.height, self.view.frame.size.width, self.view.frame.size.height / 2);
-    [hostScrollView setShowsHorizontalScrollIndicator:NO];
-    hostScrollView.delaysContentTouches = NO;
-    
+
     self.collectionView.delaysContentTouches = NO;
+    self.collectionView.allowsSelection = YES;
     self.collectionView.allowsMultipleSelection = NO;
 #if !TARGET_OS_TV
     self.collectionView.multipleTouchEnabled = NO;
@@ -1012,8 +1582,23 @@ static NSMutableSet* hostList;
     }
     else {
         [self updateTitle];
-        [self.view addSubview:hostScrollView];
+#if !TARGET_OS_TV
+        [self reloadEverything];
+#endif
     }
+}
+
+- (void) viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+
+#if !TARGET_OS_TV
+    // CALayer has no autoresizing, and the implicit animation on a bounds
+    // change would make the tint lag behind rotation.
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    _ambientLayer.frame = self.collectionView.backgroundView.bounds;
+    [CATransaction commit];
+#endif
 }
 
 #if TARGET_OS_TV
@@ -1183,15 +1768,6 @@ static NSMutableSet* hostList;
     Log(LOG_I, @"%@ application from deep link: %@", runningApp != nil ? @"Resuming" : @"Launching", app.name);
     [_appManager stopRetrieving];
 
-#if !TARGET_OS_TV
-    if (currentPosition != FrontViewPositionLeft) {
-        // This must not be animated because we need the position
-        // to change (and notify our callback to save settings data)
-        // before we call prepareToStreamApp.
-        [[self revealViewController] revealToggleAnimated:NO];
-    }
-#endif
-
     [self prepareToStreamApp:app];
     [self performSegueWithIdentifier:@"createStreamFrame" sender:nil];
 }
@@ -1216,18 +1792,9 @@ static NSMutableSet* hostList;
 - (void)viewDidAppear:(BOOL)animated
 {
     [super viewDidAppear:animated];
-    
-#if !TARGET_OS_TV
-    [[self revealViewController] setPrimaryViewController:self];
-#endif
-    
+
     [self.navigationController setNavigationBarHidden:NO animated:YES];
-    
-    // Hide 1px border line
-    UIImage* fakeImage = [[UIImage alloc] init];
-    [self.navigationController.navigationBar setShadowImage:fakeImage];
-    [self.navigationController.navigationBar setBackgroundImage:fakeImage forBarPosition:UIBarPositionAny barMetrics:UIBarMetricsDefault];
-    
+
     // Check for a pending shortcut action when appearing
     [self handlePendingShortcutAction];
     
@@ -1270,7 +1837,10 @@ static NSMutableSet* hostList;
     
     // Purge the box art cache
     [_boxArtCache removeAllObjects];
-    
+#if !TARGET_OS_TV
+    [self->_ambientCache removeAllObjects];
+#endif
+
     // Remove our lifetime observers to avoid triggering them
     // while streaming
     [[NSNotificationCenter defaultCenter] removeObserver:self];
@@ -1341,21 +1911,14 @@ static NSMutableSet* hostList;
 #endif
 }
 
+#if !TARGET_OS_TV
 - (void)updateHosts {
     Log(LOG_I, @"Updating hosts...");
-    [[hostScrollView subviews] makeObjectsPerformSelector:@selector(removeFromSuperview)];
-    UIComputerView* addComp = [[UIComputerView alloc] initForAddWithCallback:self];
-    UIComputerView* compView;
-    float prevEdge = -1;
+
     @synchronized (hostList) {
-        // Sort the host list in alphabetical order
-        NSArray* sortedHostList = [[hostList allObjects] sortedArrayUsingSelector:@selector(compareName:)];
-        for (TemporaryHost* comp in sortedHostList) {
-            compView = [[UIComputerView alloc] initWithComputer:comp andCallback:self];
-            compView.center = CGPointMake([self getCompViewX:compView addComp:addComp prevEdge:prevEdge], hostScrollView.frame.size.height / 2);
-            prevEdge = compView.frame.origin.x + compView.frame.size.width;
-            [hostScrollView addSubview:compView];
-            
+        _sortedHostList = [[hostList allObjects] sortedArrayUsingSelector:@selector(compareName:)];
+
+        for (TemporaryHost* comp in _sortedHostList) {
             // Start jobs to decode the box art in advance
             for (TemporaryApp* app in comp.appList) {
                 dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{
@@ -1364,35 +1927,37 @@ static NSMutableSet* hostList;
             }
         }
     }
-    
+
+    [self updateHostShortcuts];
+    [self updateTitle];
+    [self reloadEverything];
+}
+#else
+- (void)updateHosts {
+    Log(LOG_I, @"Updating hosts...");
+
+    @synchronized (hostList) {
+        // Sort the host list in alphabetical order
+        NSArray* sortedHostList = [[hostList allObjects] sortedArrayUsingSelector:@selector(compareName:)];
+        for (TemporaryHost* comp in sortedHostList) {
+            // Start jobs to decode the box art in advance
+            for (TemporaryApp* app in comp.appList) {
+                dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{
+                    [self updateBoxArtCacheForApp:app];
+                });
+            }
+        }
+    }
+
     // Create or delete host shortcuts as needed
     [self updateHostShortcuts];
-    
+
     // Update the title in case we now have a PC
     [self updateTitle];
-    
-    prevEdge = [self getCompViewX:addComp addComp:addComp prevEdge:prevEdge];
-    addComp.center = CGPointMake(prevEdge, hostScrollView.frame.size.height / 2);
-    
-    [hostScrollView addSubview:addComp];
-    [hostScrollView setContentSize:CGSizeMake(prevEdge + addComp.frame.size.width, hostScrollView.frame.size.height)];
-}
 
-- (float) getCompViewX:(UIComputerView*)comp addComp:(UIComputerView*)addComp prevEdge:(float)prevEdge {
-    float padding;
-    
-#if TARGET_OS_TV
-    padding = 100;
-#else
-    padding = addComp.frame.size.width / 2;
-#endif
-    
-    if (prevEdge == -1) {
-        return hostScrollView.frame.origin.x + comp.frame.size.width / 2 + padding;
-    } else {
-        return prevEdge + comp.frame.size.width / 2 + padding;
-    }
+    [self.collectionView reloadData];
 }
+#endif
 
 // This function forces immediate decoding of the UIImage, rather
 // than the default lazy decoding that results in janky scrolling.
@@ -1439,6 +2004,15 @@ static NSMutableSet* hostList;
             [_boxArtCache setObject:image forKey:app];
         }
     }
+
+#if !TARGET_OS_TV
+    if ([_ambientCache objectForKey:app] == nil) {
+        UIColor* ambient = [MoonlightTheme ambientColorForImage:[_boxArtCache objectForKey:app]];
+        if (ambient != nil) {
+            [_ambientCache setObject:ambient forKey:app];
+        }
+    }
+#endif
 }
 
 - (void) updateAppsForHost:(TemporaryHost*)host {
@@ -1449,36 +2023,39 @@ static NSMutableSet* hostList;
     
     _sortedAppList = [host.appList allObjects];
     _sortedAppList = [_sortedAppList sortedArrayUsingSelector:@selector(compareName:)];
-    
-    if (!_showHiddenApps) {
-        NSMutableArray* visibleAppList = [NSMutableArray array];
-        for (TemporaryApp* app in _sortedAppList) {
-            if (!app.hidden) {
-                [visibleAppList addObject:app];
-            }
+
+    NSMutableArray* visibleAppList = [NSMutableArray array];
+    for (TemporaryApp* app in _sortedAppList) {
+        if (app.hidden && !_showHiddenApps) {
+            continue;
         }
-        _sortedAppList = visibleAppList;
+        [visibleAppList addObject:app];
     }
-    
-    [hostScrollView removeFromSuperview];
+    _sortedAppList = visibleAppList;
+
+#if !TARGET_OS_TV
+    [self reloadEverything];
+#else
     [self.collectionView reloadData];
+#endif
 }
 
+#if TARGET_OS_TV
 - (UICollectionViewCell *)collectionView:(UICollectionView *)collectionView cellForItemAtIndexPath:(NSIndexPath *)indexPath {
     UICollectionViewCell* cell = [collectionView dequeueReusableCellWithReuseIdentifier:@"AppCell" forIndexPath:indexPath];
-    
+
     TemporaryApp* app = _sortedAppList[indexPath.row];
     UIAppView* appView = [[UIAppView alloc] initWithApp:app cache:_boxArtCache andCallback:self];
-    
+
     if (appView.bounds.size.width > 10.0) {
         CGFloat scale = cell.bounds.size.width / appView.bounds.size.width;
         [appView setCenter:CGPointMake(appView.bounds.size.width / 2 * scale, appView.bounds.size.height / 2 * scale)];
         appView.transform = CGAffineTransformMakeScale(scale, scale);
     }
-    
+
     [cell.subviews.firstObject removeFromSuperview]; // Remove a view that was previously added
     [cell addSubview:appView];
-    
+
     // Shadow opacity is controlled inside UIAppView based on whether the app
     // is hidden or not during the update cycle.
     UIBezierPath *shadowPath = [UIBezierPath bezierPathWithRect:cell.bounds];
@@ -1486,7 +2063,7 @@ static NSMutableSet* hostList;
     cell.layer.shadowColor = [UIColor blackColor].CGColor;
     cell.layer.shadowOffset = CGSizeMake(1.0f, 5.0f);
     cell.layer.shadowPath = shadowPath.CGPath;
-    
+
 #if !TARGET_OS_TV
     cell.layer.borderWidth = 1;
     cell.layer.borderColor = [[UIColor colorWithRed:0 green:0 blue:0 alpha:0.3f] CGColor];
@@ -1508,6 +2085,131 @@ static NSMutableSet* hostList;
         return 0;
     }
 }
+#else
+- (NSInteger) numberOfSectionsInCollectionView:(UICollectionView*)collectionView {
+    return _sections.count;
+}
+
+- (NSInteger) collectionView:(UICollectionView*)collectionView numberOfItemsInSection:(NSInteger)section {
+    switch ([self sectionAtIndex:section]) {
+        case MoonlightSectionHosts:
+            // Every host, plus the trailing "Add PC" tile.
+            return _sortedHostList.count + 1;
+        case MoonlightSectionContinue:
+            return _continueApp != nil ? 1 : 0;
+        case MoonlightSectionGames:
+            return _sortedAppList.count;
+    }
+    return 0;
+}
+
+// ponytail: rebuilds the tile view on every dequeue instead of reconfiguring; add a -configureForHost: reuse path if a large host list ever scrolls badly.
+- (UICollectionViewCell*) collectionView:(UICollectionView*)collectionView cellForItemAtIndexPath:(NSIndexPath*)indexPath {
+    if ([self sectionAtIndex:indexPath.section] == MoonlightSectionContinue) {
+        // Single source of truth: numberOfItemsInSection: already answered
+        // "does this section have an item?" from _continueApp, so read the
+        // same ivar here rather than re-querying findRunningApp: at a later,
+        // unsynchronized moment. Capture it in a local so the blocks below
+        // stay bound to the app this cell was actually configured with, not
+        // to whatever _continueApp holds by the time a button is tapped.
+        TemporaryApp* running = _continueApp;
+        MoonlightHeroCell* hero = [collectionView dequeueReusableCellWithReuseIdentifier:@"hero" forIndexPath:indexPath];
+
+        if (running == nil) {
+            // Should be unreachable now that both readers agree on
+            // _continueApp, but stay defensive rather than hand a nil app
+            // to the hero cell's actions.
+            hero.onResume = nil;
+            hero.onQuit = nil;
+            return hero;
+        }
+
+        [hero configureWithApp:running
+                      hostName:_selectedHost.name
+                       artwork:[_boxArtCache objectForKey:running]];
+
+        __weak MainFrameViewController* weakSelf = self;
+        hero.onResume = ^{
+            MainFrameViewController* strongSelf = weakSelf;
+            if (strongSelf == nil) {
+                return;
+            }
+            [strongSelf->_appManager stopRetrieving];
+            [strongSelf prepareToStreamApp:running];
+            [strongSelf performSegueWithIdentifier:@"createStreamFrame" sender:nil];
+        };
+        hero.onQuit = ^{
+            MainFrameViewController* strongSelf = weakSelf;
+            if (strongSelf == nil) {
+                return;
+            }
+            [strongSelf quitRunningApp:running then:^{
+                [strongSelf updateAppsForHost:strongSelf->_selectedHost];
+            }];
+        };
+
+        return hero;
+    }
+
+    MoonlightTileCell* cell = [collectionView dequeueReusableCellWithReuseIdentifier:@"tile" forIndexPath:indexPath];
+
+    if ([self sectionAtIndex:indexPath.section] == MoonlightSectionHosts) {
+        UIComputerView* hostView;
+        if (indexPath.item < _sortedHostList.count) {
+            TemporaryHost* host = _sortedHostList[indexPath.item];
+            hostView = [[UIComputerView alloc] initWithComputer:host andCallback:self];
+            [hostView setHostSelected:(host == _selectedHost)];
+        }
+        else {
+            hostView = [[UIComputerView alloc] initForAddWithCallback:self];
+        }
+        // UIComputerView is a UIButton, and UIScrollView.touchesShouldCancelInContentView:
+        // returns NO for UIControl subviews by default, so a drag starting on
+        // a card never becomes a scroll in the hosts section's orthogonal
+        // (private, un-subclassable) scroll view. Make the collection view
+        // the interactive element instead — see collectionView:didSelectItemAtIndexPath:
+        // and collectionView:contextMenuConfigurationForItemAtIndexPath:point: below.
+        hostView.userInteractionEnabled = NO;
+        [cell setTileView:hostView];
+    }
+    else if ([self sectionAtIndex:indexPath.section] == MoonlightSectionGames) {
+        TemporaryApp* app = _sortedAppList[indexPath.item];
+        [cell setTileView:[[UIAppView alloc] initWithApp:app cache:_boxArtCache andCallback:self]];
+    }
+
+    return cell;
+}
+
+- (UICollectionReusableView*) collectionView:(UICollectionView*)collectionView
+           viewForSupplementaryElementOfKind:(NSString*)kind
+                                 atIndexPath:(NSIndexPath*)indexPath {
+    MoonlightHeaderView* header = [collectionView dequeueReusableSupplementaryViewOfKind:kind
+                                                                     withReuseIdentifier:@"header"
+                                                                            forIndexPath:indexPath];
+    header.accessoryButton.hidden = YES;
+    header.accessoryButton.menu = nil;
+
+    switch ([self sectionAtIndex:indexPath.section]) {
+        case MoonlightSectionHosts:
+            header.titleLabel.text = @"PCs";
+            break;
+        case MoonlightSectionContinue:
+            header.titleLabel.text = @"Continue";
+            break;
+        case MoonlightSectionGames: {
+            header.titleLabel.text = @"Applications";
+            header.accessoryButton.hidden = NO;
+            [header.accessoryButton setImage:[UIImage systemImageNamed:@"ellipsis.circle"] forState:UIControlStateNormal];
+            [header.accessoryButton setTitle:nil forState:UIControlStateNormal];
+            header.accessoryButton.menu = [self gamesMenu];
+            header.accessoryButton.showsMenuAsPrimaryAction = YES;
+            break;
+        }
+    }
+
+    return header;
+}
+#endif
 
 - (void)didReceiveMemoryWarning
 {
@@ -1515,6 +2217,9 @@ static NSMutableSet* hostList;
     
     // Purge the box art cache on low memory
     [_boxArtCache removeAllObjects];
+#if !TARGET_OS_TV
+    [self->_ambientCache removeAllObjects];
+#endif
 }
 
 - (void)touchesBegan:(NSSet *)touches withEvent:(UIEvent *)event {
@@ -1533,14 +2238,27 @@ static NSMutableSet* hostList;
 #endif
 
 - (void) disableNavigation {
-    self.navigationController.navigationBar.topItem.rightBarButtonItem.enabled = NO;
-    self.navigationController.navigationBar.topItem.leftBarButtonItem.enabled = NO;
+    self.navigationItem.rightBarButtonItem.enabled = NO;
 }
 
 - (void) enableNavigation {
-    self.navigationController.navigationBar.topItem.rightBarButtonItem.enabled = YES;
-    self.navigationController.navigationBar.topItem.leftBarButtonItem.enabled = YES;
+    self.navigationItem.rightBarButtonItem.enabled = YES;
 }
+
+#if !TARGET_OS_TV
+- (void) showSettings {
+    SettingsViewController* settings = [self.storyboard instantiateViewControllerWithIdentifier:@"settings"];
+    UINavigationController* nav = [[UINavigationController alloc] initWithRootViewController:settings];
+    nav.modalPresentationStyle = UIModalPresentationPageSheet;
+    nav.view.tintColor = [MoonlightTheme accentColor];
+
+    UISheetPresentationController* sheet = nav.sheetPresentationController;
+    sheet.detents = @[[UISheetPresentationControllerDetent largeDetent]];
+    sheet.prefersGrabberVisible = YES;
+
+    [self presentViewController:nav animated:YES completion:nil];
+}
+#endif
 
 #if TARGET_OS_TV
 - (BOOL)canBecomeFocused {

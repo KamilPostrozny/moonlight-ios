@@ -7,6 +7,7 @@
 //
 
 #import "LoadingFrameViewController.h"
+#import "Utils.h"
 
 @implementation LoadingFrameViewController {
     BOOL presented;
@@ -14,8 +15,37 @@
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    // center the loading spinner
+
+#if !TARGET_OS_TV
+    // Dark enough to clearly read as a blocking modal state, not a faint tint
+    // that lets the card look like it's floating over whatever's behind it.
+    self.view.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.45f];
+
+    UIVisualEffectView* card = [MoonlightTheme glassViewWithTint:nil];
+    card.layer.cornerRadius = [MoonlightTheme cardCornerRadius];
+    card.layer.cornerCurve = kCACornerCurveContinuous;
+    card.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.view addSubview:card];
+
+    // The spinner comes from the storyboard; re-parent it into the card.
+    [self.loadingSpinner removeFromSuperview];
+    self.loadingSpinner.translatesAutoresizingMaskIntoConstraints = NO;
+    self.loadingSpinner.color = [UIColor labelColor];
+    [card.contentView addSubview:self.loadingSpinner];
+
+    // Centred on this view controller's own view (not some ancestor's stale
+    // frame) — this is the same view the background scrim above is drawn on.
+    [NSLayoutConstraint activateConstraints:@[
+        [card.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
+        [card.centerYAnchor constraintEqualToAnchor:self.view.centerYAnchor],
+        [card.widthAnchor constraintEqualToConstant:120],
+        [card.heightAnchor constraintEqualToConstant:120],
+        [self.loadingSpinner.centerXAnchor constraintEqualToAnchor:card.contentView.centerXAnchor],
+        [self.loadingSpinner.centerYAnchor constraintEqualToAnchor:card.contentView.centerYAnchor],
+    ]];
+#else
     self.loadingSpinner.center = CGPointMake(self.view.frame.size.width / 2, self.view.frame.size.height / 2);
+#endif
 }
 
 - (UIViewController*) activeViewController {

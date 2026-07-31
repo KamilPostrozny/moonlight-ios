@@ -148,6 +148,99 @@ NSString *const deviceName = @"roth";
 
 @end
 
+#if !TARGET_OS_TV
+
+@implementation MoonlightTheme
+
++ (UIColor*) accentColor {
+    return [UIColor colorWithRed:0.67f green:0.62f blue:1.0f alpha:1.0f];
+}
+
++ (CGFloat) tileCornerRadius {
+    return 14.0f;
+}
+
++ (CGFloat) cardCornerRadius {
+    return 22.0f;
+}
+
++ (UIVisualEffectView*) glassViewWithTint:(UIColor*)tint {
+    UIGlassEffect* effect = [[UIGlassEffect alloc] init];
+    effect.tintColor = tint;
+
+    UIVisualEffectView* view = [[UIVisualEffectView alloc] initWithEffect:effect];
+    view.clipsToBounds = YES;
+    return view;
+}
+
++ (void) applyGlassTint:(UIColor*)tint toView:(UIVisualEffectView*)view {
+    UIGlassEffect* effect = [[UIGlassEffect alloc] init];
+    effect.tintColor = tint;
+    view.effect = effect;
+}
+
++ (UIButtonConfiguration*) glassButtonWithTitle:(NSString*)title
+                                          image:(UIImage*)image
+                                      prominent:(BOOL)prominent {
+    UIButtonConfiguration* config = prominent
+        ? [UIButtonConfiguration prominentGlassButtonConfiguration]
+        : [UIButtonConfiguration glassButtonConfiguration];
+
+    config.title = title;
+    config.image = image;
+    config.imagePadding = 6.0f;
+
+    if (prominent) {
+        config.baseBackgroundColor = [MoonlightTheme accentColor];
+    }
+
+    return config;
+}
+
++ (UIColor*) ambientColorForImage:(UIImage*)image {
+    CGImageRef cgImage = image.CGImage;
+    if (cgImage == NULL) {
+        return nil;
+    }
+
+    // Drawing the whole image into a 1x1 context makes the hardware do the
+    // averaging for us.
+    unsigned char pixel[4] = {0, 0, 0, 0};
+    CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+    CGContextRef context = CGBitmapContextCreate(pixel, 1, 1, 8, 4, colorSpace,
+                                                 kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
+    CGColorSpaceRelease(colorSpace);
+    if (context == NULL) {
+        return nil;
+    }
+
+    CGContextSetInterpolationQuality(context, kCGInterpolationMedium);
+    CGContextDrawImage(context, CGRectMake(0, 0, 1, 1), cgImage);
+    CGContextRelease(context);
+
+    UIColor* average = [UIColor colorWithRed:pixel[0] / 255.0f
+                                       green:pixel[1] / 255.0f
+                                        blue:pixel[2] / 255.0f
+                                       alpha:1.0f];
+
+    // Averaging washes colour out badly, so push saturation back up. Clamp
+    // brightness so a very dark or very bright cover doesn't produce a tint
+    // that swallows content or blinds the user.
+    CGFloat hue = 0, saturation = 0, brightness = 0, alpha = 0;
+    if (![average getHue:&hue saturation:&saturation brightness:&brightness alpha:&alpha]) {
+        return nil;
+    }
+
+    return [UIColor colorWithHue:hue
+                      saturation:MIN(saturation * 2.2f, 0.85f)
+                      brightness:MAX(MIN(brightness, 0.55f), 0.22f)
+                           alpha:1.0f];
+}
+
+@end
+
+#endif
+
 @implementation NSString (NSStringWithTrim)
 
 - (NSString *)trim {

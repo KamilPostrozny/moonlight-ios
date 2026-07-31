@@ -12,6 +12,7 @@
 #import "StreamManager.h"
 #import "ControllerSupport.h"
 #import "DataManager.h"
+#import "Utils.h"
 
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -39,7 +40,13 @@
     UITapGestureRecognizer *_menuTapGestureRecognizer;
     UITapGestureRecognizer *_menuDoubleTapGestureRecognizer;
     UITapGestureRecognizer *_playPauseTapGestureRecognizer;
+#if !TARGET_OS_TV
+    UIVisualEffectView *_overlayView;
+    UILabel *_overlayLabel;
+    UIVisualEffectView *_startupCard;
+#else
     UITextView *_overlayView;
+#endif
     UILabel *_stageLabel;
     UILabel *_tipLabel;
     UIActivityIndicatorView *_spinner;
@@ -47,18 +54,9 @@
     UIScrollView *_scrollView;
     BOOL _userIsInteracting;
     CGSize _keyboardSize;
-    
+
 #if !TARGET_OS_TV
     UIScreenEdgePanGestureRecognizer *_exitSwipeRecognizer;
-#endif
-}
-
-- (void)viewDidAppear:(BOOL)animated
-{
-    [super viewDidAppear:animated];
-    
-#if !TARGET_OS_TV
-    [[self revealViewController] setPrimaryViewController:self];
 #endif
 }
 
@@ -91,8 +89,7 @@
     [_stageLabel sizeToFit];
     _stageLabel.textAlignment = NSTextAlignmentCenter;
     _stageLabel.textColor = [UIColor whiteColor];
-    _stageLabel.center = CGPointMake(self.view.frame.size.width / 2, self.view.frame.size.height / 2);
-    
+
     _spinner = [[UIActivityIndicatorView alloc] init];
     [_spinner setUserInteractionEnabled:NO];
 #if TARGET_OS_TV
@@ -102,8 +99,7 @@
 #endif
     [_spinner sizeToFit];
     [_spinner startAnimating];
-    _spinner.center = CGPointMake(self.view.frame.size.width / 2, self.view.frame.size.height / 2 - _stageLabel.frame.size.height - _spinner.frame.size.height);
-    
+
     _controllerSupport = [[ControllerSupport alloc] initWithConfig:self.streamConfig delegate:self];
     _inactivityTimer = nil;
     
@@ -149,8 +145,7 @@
     [_tipLabel sizeToFit];
     _tipLabel.textColor = [UIColor whiteColor];
     _tipLabel.textAlignment = NSTextAlignmentCenter;
-    _tipLabel.center = CGPointMake(self.view.frame.size.width / 2, self.view.frame.size.height * 0.9);
-    
+
     _streamMan = [[StreamManager alloc] initWithConfig:self.streamConfig
                                             renderView:_streamView
                                    connectionCallbacks:self];
@@ -206,13 +201,63 @@
         [self.view addSubview:_streamView];
     }
     
+#if !TARGET_OS_TV
+    _startupCard = [MoonlightTheme glassViewWithTint:nil];
+    _startupCard.layer.cornerRadius = [MoonlightTheme cardCornerRadius];
+    _startupCard.layer.cornerCurve = kCACornerCurveContinuous;
+    _startupCard.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.view addSubview:_startupCard];
+
+    _stageLabel.numberOfLines = 0;
+    _tipLabel.numberOfLines = 0;
+
+    UIStackView* stack = [[UIStackView alloc] initWithArrangedSubviews:@[_spinner, _stageLabel, _tipLabel]];
+    stack.axis = UILayoutConstraintAxisVertical;
+    stack.alignment = UIStackViewAlignmentCenter;
+    stack.spacing = 12;
+    stack.translatesAutoresizingMaskIntoConstraints = NO;
+    [_startupCard.contentView addSubview:stack];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [_startupCard.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
+        [_startupCard.centerYAnchor constraintEqualToAnchor:self.view.centerYAnchor],
+        [_startupCard.widthAnchor constraintLessThanOrEqualToAnchor:self.view.widthAnchor multiplier:0.8],
+        [stack.topAnchor constraintEqualToAnchor:_startupCard.contentView.topAnchor constant:24],
+        [stack.bottomAnchor constraintEqualToAnchor:_startupCard.contentView.bottomAnchor constant:-24],
+        [stack.leadingAnchor constraintEqualToAnchor:_startupCard.contentView.leadingAnchor constant:24],
+        [stack.trailingAnchor constraintEqualToAnchor:_startupCard.contentView.trailingAnchor constant:-24],
+    ]];
+#else
     [self.view addSubview:_stageLabel];
     [self.view addSubview:_spinner];
     [self.view addSubview:_tipLabel];
+#endif
 }
 
 - (UIView *)viewForZoomingInScrollView:(UIScrollView *)scrollView {
     return _streamView;
+}
+
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+
+    // _streamView (and _scrollView, when present) are sized once in
+    // viewDidLoad from self.view.frame at that moment and never resized
+    // again. That's stale as soon as the view's bounds change for any
+    // reason — most importantly, requestOrientations: switching us into
+    // landscape after launching in portrait, but also any later rotation.
+    // Keep them pinned to the current bounds on every layout pass. This
+    // mirrors the original one-time sizing, so it doesn't interfere with the
+    // (currently disabled, #if 0 above) keyboard show/hide logic that
+    // resizes _scrollView.frame relative to itself: that logic sits behind
+    // #if 0 and never runs, so there is nothing active for this to fight.
+    if (_scrollView != nil) {
+        _scrollView.frame = self.view.bounds;
+        _streamView.frame = _scrollView.bounds;
+    }
+    else {
+        _streamView.frame = self.view.bounds;
+    }
 }
 
 - (void)willMoveToParentViewController:(UIViewController *)parent {
@@ -262,31 +307,60 @@
 }
 
 - (void)updateOverlayText:(NSString*)text {
+#if !TARGET_OS_TV
+    if (_overlayView == nil) {
+        _overlayView = [MoonlightTheme glassViewWithTint:nil];
+        _overlayView.layer.cornerRadius = 14;
+        _overlayView.layer.cornerCurve = kCACornerCurveContinuous;
+        _overlayView.userInteractionEnabled = NO;
+        _overlayView.translatesAutoresizingMaskIntoConstraints = NO;
+        [self.view addSubview:_overlayView];
+
+        _overlayLabel = [[UILabel alloc] init];
+        _overlayLabel.font = [UIFont monospacedDigitSystemFontOfSize:12 weight:UIFontWeightRegular];
+        _overlayLabel.textColor = [UIColor labelColor];
+        _overlayLabel.numberOfLines = 0;
+        _overlayLabel.translatesAutoresizingMaskIntoConstraints = NO;
+        [_overlayView.contentView addSubview:_overlayLabel];
+
+        [NSLayoutConstraint activateConstraints:@[
+            [_overlayView.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:12],
+            [_overlayView.leadingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.leadingAnchor constant:12],
+            [_overlayLabel.topAnchor constraintEqualToAnchor:_overlayView.contentView.topAnchor constant:8],
+            [_overlayLabel.bottomAnchor constraintEqualToAnchor:_overlayView.contentView.bottomAnchor constant:-8],
+            [_overlayLabel.leadingAnchor constraintEqualToAnchor:_overlayView.contentView.leadingAnchor constant:12],
+            [_overlayLabel.trailingAnchor constraintEqualToAnchor:_overlayView.contentView.trailingAnchor constant:-12],
+        ]];
+    }
+#else
     if (_overlayView == nil) {
         _overlayView = [[UITextView alloc] init];
-#if !TARGET_OS_TV
-        [_overlayView setEditable:NO];
-#endif
         [_overlayView setUserInteractionEnabled:NO];
         [_overlayView setSelectable:NO];
         [_overlayView setScrollEnabled:NO];
-        
+
         // HACK: If not using stats overlay, center the text
         if (_statsUpdateTimer == nil) {
             [_overlayView setTextAlignment:NSTextAlignmentCenter];
         }
-        
+
         [_overlayView setTextColor:[UIColor lightGrayColor]];
         [_overlayView setBackgroundColor:[UIColor blackColor]];
-#if TARGET_OS_TV
         [_overlayView setFont:[UIFont systemFontOfSize:24]];
-#else
-        [_overlayView setFont:[UIFont systemFontOfSize:12]];
-#endif
         [_overlayView setAlpha:0.5];
         [self.view addSubview:_overlayView];
     }
-    
+#endif
+
+#if !TARGET_OS_TV
+    if (text != nil) {
+        _overlayLabel.text = text;
+        _overlayView.hidden = NO;
+    }
+    else {
+        _overlayView.hidden = YES;
+    }
+#else
     if (text != nil) {
         // We set our bounds to the maximum width in order to work around a bug where
         // sizeToFit interacts badly with the UITextView's line breaks, causing the
@@ -303,6 +377,7 @@
     else {
         [_overlayView setHidden:YES];
     }
+#endif
 }
 
 - (void) returnToMainFrame {
@@ -374,7 +449,10 @@
         // the first frame of video.
         self->_stageLabel.hidden = YES;
         self->_tipLabel.hidden = YES;
-        
+#if !TARGET_OS_TV
+        self->_startupCard.hidden = YES;
+#endif
+
         [self->_streamView showOnScreenControls];
         
         [self->_controllerSupport connectionEstablished];
@@ -476,8 +554,10 @@
         NSString* lowerCase = [NSString stringWithFormat:@"%s in progress...", stageName];
         NSString* titleCase = [[[lowerCase substringToIndex:1] uppercaseString] stringByAppendingString:[lowerCase substringFromIndex:1]];
         [self->_stageLabel setText:titleCase];
+#if TARGET_OS_TV
         [self->_stageLabel sizeToFit];
         self->_stageLabel.center = CGPointMake(self.view.frame.size.width / 2, self->_stageLabel.center.y);
+#endif
     });
 }
 
@@ -677,6 +757,53 @@
 }
 
 #if !TARGET_OS_TV
+// UINavigationController does not forward supportedInterfaceOrientations to
+// its top view controller, so that override alone never takes effect while
+// we're pushed inside one. Explicitly request the geometry change instead.
+- (void) requestOrientations:(UIInterfaceOrientationMask)orientations {
+    UIWindowScene* scene = self.view.window.windowScene;
+    if (scene == nil) {
+        for (UIScene* candidate in UIApplication.sharedApplication.connectedScenes) {
+            if ([candidate isKindOfClass:[UIWindowScene class]]) {
+                scene = (UIWindowScene*)candidate;
+                break;
+            }
+        }
+    }
+    if (scene == nil) {
+        return;
+    }
+
+    UIWindowSceneGeometryPreferencesIOS* preferences =
+        [[UIWindowSceneGeometryPreferencesIOS alloc] initWithInterfaceOrientations:orientations];
+    [scene requestGeometryUpdateWithPreferences:preferences errorHandler:^(NSError* error) {
+        Log(LOG_W, @"Geometry update failed: %@", error);
+    }];
+    [self setNeedsUpdateOfSupportedInterfaceOrientations];
+}
+
+- (void) viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+
+    // Force landscape before the stream is ever laid out, so it never starts
+    // portrait when launched while the device is held in portrait.
+    // self.view.window may still be nil here (we may not be installed in the
+    // window hierarchy yet) — requestOrientations: falls back to scanning
+    // connectedScenes for that case.
+    [self requestOrientations:UIInterfaceOrientationMaskLandscape];
+}
+
+- (void) viewWillDisappear:(BOOL)animated {
+    [super viewWillDisappear:animated];
+
+    // Restore the app's full orientation set on every exit path (graceful
+    // disconnect, error dialogs, inactivity timeout, edge swipe, backgrounding
+    // — they all funnel through returnToMainFrame's
+    // popToRootViewControllerAnimated:, which triggers this), or the
+    // browsing UI is left stuck in landscape.
+    [self requestOrientations:UIInterfaceOrientationMaskAllButUpsideDown];
+}
+
 // Require a confirmation when streaming to activate a system gesture
 - (UIRectEdge)preferredScreenEdgesDeferringSystemGestures {
     return UIRectEdgeAll;
@@ -701,6 +828,13 @@
 
 - (BOOL)shouldAutorotate {
     return YES;
+}
+
+- (UIInterfaceOrientationMask) supportedInterfaceOrientations {
+    // The stream itself is always landscape; rotating mid-session would
+    // force a resolution renegotiation and the on-screen controls are laid
+    // out for landscape.
+    return UIInterfaceOrientationMaskLandscape;
 }
 
 - (BOOL)prefersPointerLocked {

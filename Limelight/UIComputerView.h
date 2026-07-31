@@ -25,5 +25,8 @@
 
 - (id) initWithComputer:(TemporaryHost*)host andCallback:(id<HostCallback>)callback;
 - (id) initForAddWithCallback:(id<HostCallback>)callback;
+#if !TARGET_OS_TV
+- (void) setHostSelected:(BOOL)selected;
+#endif
 
 @end
